@@ -1,0 +1,27 @@
+# --- 빌드 산출물 ---
+build/
+main
+test_*
+*.o
+*.obj
+*.out
+*.exe
+
+# --- MuJoCo 로그 ---
+MUJOCO_LOG.TXT
+
+# --- 디버그 / 코어 ---
+core
+*.core
+vgcore.*
+
+# --- 에디터 / OS ---
+*.swp
+*~
+.DS_Store
+
+# --- VS Code: 공유 설정만 추적, 개인 설정은 무시 ---
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/c_cpp_properties.json

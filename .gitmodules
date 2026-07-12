@@ -1,0 +1,4 @@
+[submodule "model/dyros_tocabi_v2"]
+	path = model/dyros_tocabi_v2
+	url = https://github.com/saga0619/dyros_tocabi_v2.git
+	branch = ecat_xenomai

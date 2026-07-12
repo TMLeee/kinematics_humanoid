@@ -1,0 +1,48 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "build (kin_humanoid)",
+            "command": "/usr/bin/g++",
+            "args": [
+                "-std=c++17",
+                "-fdiagnostics-color=always",
+                "-g",
+                "-O0",
+                "${workspaceFolder}/src/main.cpp",
+                "${workspaceFolder}/src/simulator/MujocoEnv.cpp",
+                "-o",
+                "${workspaceFolder}/main",
+                "-I${workspaceFolder}/src",
+                "-I/opt/mujoco/mujoco/include",
+                "-I/usr/include/eigen3",
+                "-I/usr/local/include",
+                "-L/opt/mujoco/mujoco/lib",
+                "-L/usr/local/lib",
+                "-Wl,-rpath,/opt/mujoco/mujoco/lib",
+                "-Wl,-rpath,/usr/local/lib",
+                "-lmujoco",
+                "-lglfw",
+                "-lGLEW",
+                "-lGL",
+                "-lrbdl",
+                "-lrbdl_urdfreader",
+                "-lm",
+                "-ldl",
+                "-lpthread"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "프로젝트 전체 빌드 (src -> ./main), MuJoCo + GLFW + Eigen/RBDL 링크"
+        }
+    ]
+}

@@ -91,12 +91,14 @@ On launch:
 2. Reset to **keyframe 0 (`front`)** — a standing pose with pelvis at 0.92983 m
    and slightly bent knees.
 3. Run an Eigen/RBDL self-test once to verify the libraries link and run.
-4. Open the GLFW viewer and run the simulation loop.
+4. Switch all joint actuators to **position control mode** and hold the current
+   (keyframe) pose.
+5. Open the GLFW viewer and run the simulation loop.
 
-> **Note**: there is no controller yet, so actuator torques are zero.
-> The robot therefore collapses in place under gravity (-9.81) — this is expected.
-> Standing and motion generation are the job of the upcoming kinematics-based
-> whole-body controller.
+> **Note**: every joint is position-controlled, so the robot **holds its standing
+> pose** in place (verified: ~6 mm pelvis drift, < 1.5° joint error over 2 s).
+> Motion is produced later by the kinematics-based controller writing desired
+> joint angles into `d->ctrl`.
 
 ### Note on the initial pose
 
@@ -133,7 +135,29 @@ Toggle any group at runtime with `MujocoEnv::setGeomGroupVisible(group, visible)
 
 ---
 
-## 6. Debugging (VS Code)
+## 6. Actuation & control mode
+
+The Tocabi MJCF ships with 33 torque `motor` actuators (one per joint). For
+**kinematics-level control** those are switched, on the loaded model in memory
+(no XML/submodule edit), into **position servos** by `MujocoEnv::setJointPositionMode(kp, kv)`:
+
+```
+force = kp * (ctrl - q) - kv * qdot     // ctrl becomes the desired joint angle [rad]
+```
+
+- The original per-joint `ctrlrange` (torque limits) is moved to `forcerange`, so
+  realistic torque saturation is preserved while `ctrl` now carries a position.
+- `MujocoEnv::holdCurrentPose()` seeds `d->ctrl` with the current joint angles, so
+  the robot holds its pose from the first step.
+- Default gains: `kp = 2000`, `kv = 100` (uniform). Tune in `main.cpp`.
+
+This is the interface every kinematics-level controller uses: compute desired
+joint angles `q_des` and write them to `d->ctrl` each control cycle; MuJoCo's
+built-in servo turns them into joint torques.
+
+---
+
+## 7. Debugging (VS Code)
 
 Open `prj/kinematics_humanoid.code-workspace` to load the project:
 
@@ -146,7 +170,7 @@ library paths into `LD_LIBRARY_PATH`.
 
 ---
 
-## 7. Note on RBDL for kinematics
+## 8. Note on RBDL for kinematics
 
 | Use case | Fit |
 |----------|-----|
@@ -160,11 +184,12 @@ kinematics/dynamics the controller queries.
 
 ---
 
-## 8. Status / roadmap
+## 9. Status / roadmap
 
 **Done**
 - [x] MuJoCo environment wrapper (load / step / render / mouse camera)
 - [x] Keyframe init pose, ground + collision-mesh render cleanup
+- [x] Joint position control mode (position servos) — holds standing pose
 - [x] Dependency wiring (Eigen / RBDL / Tocabi model)
 - [x] VS Code build/debug environment
 

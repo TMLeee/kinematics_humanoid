@@ -17,6 +17,11 @@ namespace {
 constexpr const char* kDefaultModel =
     "model/dyros_tocabi_v2/tocabi_description/mujoco_model/dyros_tocabi.xml";
 
+// 위치 서보 게인(모든 관절 공통). force = kp*(ctrl - q) - kv*qdot.
+// kinematics-level 제어에서 목표 관절각을 강성 있게 추종하도록 충분히 크게 잡는다.
+constexpr double kPositionKp = 2000.0;
+constexpr double kPositionKv = 100.0;
+
 // Eigen + RBDL 링크 및 동작을 확인하는 소규모 자기진단.
 // 3-링크 회전 체인을 만들고 순운동학(CoM)을 한 번 계산한다.
 void rbdlSelfTest() {
@@ -59,6 +64,13 @@ int main(int argc, char** argv) {
     // Eigen / RBDL 링크 검증.
     rbdlSelfTest();
 
+    // 모든 관절을 위치제어 모드로 전환하고 현재(키프레임) 자세를 목표로 유지한다.
+    // 이후 kinematics-level 제어기는 매 주기 env.data()->ctrl 에 목표 관절각을 쓴다.
+    env.setJointPositionMode(kPositionKp, kPositionKv);
+    env.holdCurrentPose();
+    std::printf("[kin_humanoid] joint position mode ON (kp=%.0f, kv=%.0f), holding pose\n",
+                kPositionKp, kPositionKv);
+
     if (!env.initViewer("kin_humanoid — DYROS Tocabi")) {
         std::fprintf(stderr, "[kin_humanoid] viewer init failed (headless?)\n");
         return 1;
@@ -67,7 +79,7 @@ int main(int argc, char** argv) {
     std::printf("[kin_humanoid] entering sim loop (close window to quit)\n");
     while (!env.viewerShouldClose()) {
         // TODO: 여기서 키네마틱스 기반 whole-body 제어를 매 제어주기마다 호출하고
-        //       env.data()->ctrl 에 명령을 기록한다.
+        //       목표 관절각을 env.data()->ctrl 에 기록한다(현재는 자세 유지).
         env.step();
         env.render();
     }

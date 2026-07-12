@@ -94,6 +94,41 @@ void MujocoEnv::setGeomGroupVisible(int group, bool visible) {
     opt_.geomgroup[group] = visible ? 1 : 0;
 }
 
+void MujocoEnv::setJointPositionMode(double kp, double kv) {
+    if (!m_) return;
+    for (int i = 0; i < m_->nu; ++i) {
+        // 관절 트랜스미션만 위치 서보로 바꾼다(tocabi 액추에이터는 모두 해당).
+        if (m_->actuator_trntype[i] != mjTRN_JOINT) continue;
+
+        // 기존 ctrlrange(토크 한계) → forcerange 로 이전하여 토크 포화를 보존.
+        if (m_->actuator_ctrllimited[i]) {
+            m_->actuator_forcerange[2 * i]     = m_->actuator_ctrlrange[2 * i];
+            m_->actuator_forcerange[2 * i + 1] = m_->actuator_ctrlrange[2 * i + 1];
+            m_->actuator_forcelimited[i]       = 1;
+            // ctrl 은 이제 위치 명령이므로 토크 범위로 클램프하지 않는다.
+            m_->actuator_ctrllimited[i]        = 0;
+        }
+
+        // position 서보: force = kp*ctrl + (-kp*q - kv*qdot).
+        m_->actuator_gaintype[i] = mjGAIN_FIXED;
+        m_->actuator_biastype[i] = mjBIAS_AFFINE;
+        for (int k = 0; k < mjNGAIN; ++k) m_->actuator_gainprm[i * mjNGAIN + k] = 0.0;
+        for (int k = 0; k < mjNBIAS; ++k) m_->actuator_biasprm[i * mjNBIAS + k] = 0.0;
+        m_->actuator_gainprm[i * mjNGAIN + 0] =  kp;
+        m_->actuator_biasprm[i * mjNBIAS + 1] = -kp;
+        m_->actuator_biasprm[i * mjNBIAS + 2] = -kv;
+    }
+}
+
+void MujocoEnv::holdCurrentPose() {
+    if (!m_ || !d_) return;
+    for (int i = 0; i < m_->nu; ++i) {
+        if (m_->actuator_trntype[i] != mjTRN_JOINT) continue;
+        const int jnt = m_->actuator_trnid[2 * i];
+        d_->ctrl[i] = d_->qpos[m_->jnt_qposadr[jnt]];
+    }
+}
+
 void MujocoEnv::step() {
     mj_step(m_, d_);
 }
@@ -106,10 +141,39 @@ bool MujocoEnv::render() {
 
     mjv_updateScene(m_, d_, &opt_, nullptr, &cam_, mjCAT_ALL, &scn_);
     mjr_render(viewport, &scn_, &con_);
+    drawOverlay(viewport);
 
     glfwSwapBuffers(window_);
     glfwPollEvents();
     return true;
+}
+
+// 좌상단에 실시간 배율 / FPS / 시뮬레이션 시간을 작은 글씨로 표시한다.
+// 벽시계 대비 sim 시간 진행률로 실시간 배율을, 프레임 수로 FPS 를 약 0.5초마다 갱신한다.
+void MujocoEnv::drawOverlay(const mjrRect& viewport) {
+    const auto now = Clock::now();
+    if (!stat_init_) {
+        stat_wall_ = now;
+        stat_sim_  = d_->time;
+        stat_init_ = true;
+    }
+    ++stat_frames_;
+    const double wall_dt =
+        std::chrono::duration<double>(now - stat_wall_).count();
+    if (wall_dt >= 0.5) {
+        disp_fps_ = stat_frames_ / wall_dt;
+        disp_rtf_ = (d_->time - stat_sim_) / wall_dt;   // sim진행/실제경과 = 실시간 배율
+        stat_frames_ = 0;
+        stat_wall_   = now;
+        stat_sim_    = d_->time;
+    }
+
+    char labels[128];
+    char values[128];
+    std::snprintf(labels, sizeof(labels), "Real-time\nFPS\nSim time");
+    std::snprintf(values, sizeof(values), "%.2fx\n%.1f\n%.2f s",
+                  disp_rtf_, disp_fps_, d_->time);
+    mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, viewport, labels, values, &con_);
 }
 
 bool MujocoEnv::viewerShouldClose() const {

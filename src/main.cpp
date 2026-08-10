@@ -17,6 +17,9 @@ namespace {
 constexpr const char* kDefaultModel =
     "model/dyros_tocabi_v2/tocabi_description/mujoco_model/dyros_tocabi.xml";
 
+// 시뮬레이션 주기(Hz). 모델의 timestep 을 로드 후 이 값으로 덮어쓴다(서브모듈 무수정).
+constexpr double kSimRateHz = 500.0;   // 500 Hz -> timestep 0.002 s
+
 // 위치 서보 게인(모든 관절 공통). force = kp*(ctrl - q) - kv*qdot.
 // kinematics-level 제어에서 목표 관절각을 강성 있게 추종하도록 충분히 크게 잡는다.
 constexpr double kPositionKp = 2000.0;
@@ -60,6 +63,11 @@ int main(int argc, char** argv) {
     mjModel* m = env.model();
     std::printf("[kin_humanoid] model loaded: nq=%d nv=%d nu=%d\n",
                 m->nq, m->nv, m->nu);
+
+    // 시뮬레이션 주기를 500 Hz 로 설정(모델 기본 0.5ms → 2ms).
+    m->opt.timestep = 1.0 / kSimRateHz;
+    std::printf("[kin_humanoid] sim rate: %.0f Hz (timestep=%.4f s)\n",
+                kSimRateHz, m->opt.timestep);
 
     // Eigen / RBDL 링크 검증.
     rbdlSelfTest();

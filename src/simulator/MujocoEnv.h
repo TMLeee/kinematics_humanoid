@@ -22,6 +22,21 @@ public:
     // 렌더링 창을 연다 (headless 로 쓰려면 호출하지 않는다).
     bool initViewer(const std::string& title = "kin_humanoid");
 
+    // 초기(자유) 카메라 각도/위치를 설정한다. initViewer 이후 호출.
+    //   azimuth/elevation: 도(deg), distance: lookat 로부터의 거리(m),
+    //   (cx,cy,cz): 바라보는 지점 lookat(m).
+    void setCamera(double azimuth, double elevation, double distance,
+                   double cx, double cy, double cz);
+
+    // 현재 카메라 파라미터를 터미널에 출력한다(뷰어에서 'P' 키).
+    void printCamera() const;
+
+    // 현재 카메라 뷰를 파일에 저장한다('P' 키에서 호출). 다음 실행 때 자동 복원된다.
+    void saveCamera() const;
+
+    // 저장된 카메라 뷰가 있으면 불러와 적용한다(있으면 true). initViewer 에서 호출.
+    bool loadCamera();
+
     // 충돌 지오메트리(그룹) 렌더링 on/off. 기본은 group 2(충돌 프리미티브) 숨김.
     void setGeomGroupVisible(int group, bool visible);
 
@@ -50,6 +65,7 @@ public:
     void onMouseButton(int button, int action, int mods);
     void onMouseMove(double xpos, double ypos);
     void onScroll(double yoffset);
+    void onKey(int key, int action, int mods);
 
 private:
     mjModel* m_ = nullptr;

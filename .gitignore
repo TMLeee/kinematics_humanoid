@@ -10,6 +10,9 @@ test_*
 # --- MuJoCo 로그 ---
 MUJOCO_LOG.TXT
 
+# --- 저장된 카메라 뷰 ('P' 키, 개인 런타임 설정) ---
+camera_view.cfg
+
 # --- 디버그 / 코어 ---
 core
 *.core

@@ -2,9 +2,13 @@
 
 #include <GLFW/glfw3.h>
 #include <cstdio>
+#include <fstream>
 
 // ---- GLFW 정적 트램폴린: 윈도우 user pointer 로 MujocoEnv 인스턴스를 찾는다 ----
 namespace {
+// 저장된 카메라 뷰 파일(작업 디렉터리 기준). 'P' 로 저장하면 다음 실행 때 복원된다.
+constexpr const char* kCameraFile = "camera_view.cfg";
+
 MujocoEnv* envOf(GLFWwindow* w) {
     return static_cast<MujocoEnv*>(glfwGetWindowUserPointer(w));
 }
@@ -16,6 +20,9 @@ void cursorPosCb(GLFWwindow* w, double x, double y) {
 }
 void scrollCb(GLFWwindow* w, double /*xoff*/, double yoff) {
     if (auto* e = envOf(w)) e->onScroll(yoff);
+}
+void keyCb(GLFWwindow* w, int key, int /*scancode*/, int action, int mods) {
+    if (auto* e = envOf(w)) e->onKey(key, action, mods);
 }
 }  // namespace
 
@@ -73,6 +80,13 @@ bool MujocoEnv::initViewer(const std::string& title) {
     mjv_makeScene(m_, &scn_, 2000);
     mjr_makeContext(m_, &con_, mjFONTSCALE_150);
 
+    // 초기 카메라: 기본값을 잡은 뒤, 저장된 뷰(camera_view.cfg)가 있으면 그것으로 덮어쓴다.
+    // 뷰어에서 'P' 를 누르면 현재 뷰가 저장되어 다음 실행 때 이 위치로 열린다.
+    setCamera(/*azimuth=*/127.0, /*elevation=*/-17.0, /*distance=*/3.500,
+              /*lookat=*/0.557, 0.330, 0.610);
+    if (loadCamera())
+        std::printf("[camera] loaded saved view from %s\n", kCameraFile);
+
     // 충돌 프리미티브(class "cls" = group 2)는 회색 박스로 보이므로 숨긴다.
     setGeomGroupVisible(2, false);
     // 바닥 평면(geom "ground")은 group 3 인데 MuJoCo 기본 옵션은
@@ -84,8 +98,47 @@ bool MujocoEnv::initViewer(const std::string& title) {
     glfwSetMouseButtonCallback(window_, mouseButtonCb);
     glfwSetCursorPosCallback(window_, cursorPosCb);
     glfwSetScrollCallback(window_, scrollCb);
+    glfwSetKeyCallback(window_, keyCb);
 
     viewer_ = true;
+    return true;
+}
+
+void MujocoEnv::setCamera(double azimuth, double elevation, double distance,
+                          double cx, double cy, double cz) {
+    cam_.type      = mjCAMERA_FREE;
+    cam_.azimuth   = azimuth;
+    cam_.elevation = elevation;
+    cam_.distance  = distance;
+    cam_.lookat[0] = cx;
+    cam_.lookat[1] = cy;
+    cam_.lookat[2] = cz;
+}
+
+void MujocoEnv::printCamera() const {
+    std::printf("[camera] azimuth=%.1f elevation=%.1f distance=%.3f "
+                "lookat=(%.3f, %.3f, %.3f)\n",
+                cam_.azimuth, cam_.elevation, cam_.distance,
+                cam_.lookat[0], cam_.lookat[1], cam_.lookat[2]);
+}
+
+void MujocoEnv::saveCamera() const {
+    std::ofstream f(kCameraFile);
+    if (!f) {
+        std::fprintf(stderr, "[camera] save failed: %s\n", kCameraFile);
+        return;
+    }
+    f << cam_.azimuth   << ' ' << cam_.elevation << ' ' << cam_.distance << ' '
+      << cam_.lookat[0] << ' ' << cam_.lookat[1] << ' ' << cam_.lookat[2] << '\n';
+    std::printf("[camera] saved view -> %s\n", kCameraFile);
+}
+
+bool MujocoEnv::loadCamera() {
+    std::ifstream f(kCameraFile);
+    if (!f) return false;
+    double az, el, dist, cx, cy, cz;
+    if (!(f >> az >> el >> dist >> cx >> cy >> cz)) return false;
+    setCamera(az, el, dist, cx, cy, cz);
     return true;
 }
 
@@ -216,4 +269,13 @@ void MujocoEnv::onMouseMove(double xpos, double ypos) {
 void MujocoEnv::onScroll(double yoffset) {
     // 휠 스크롤 = 줌.
     mjv_moveCamera(m_, mjMOUSE_ZOOM, 0.0, -0.05 * yoffset, &scn_, &cam_);
+}
+
+void MujocoEnv::onKey(int key, int action, int /*mods*/) {
+    if (action != GLFW_PRESS) return;
+    // 'P': 현재 카메라 뷰를 출력하고 파일에 저장 → 다음 실행 때 이 위치로 열린다.
+    if (key == GLFW_KEY_P) {
+        printCamera();
+        saveCamera();
+    }
 }

@@ -28,3 +28,6 @@ vgcore.*
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/c_cpp_properties.json
+
+# headless verification harness binary
+headless_test

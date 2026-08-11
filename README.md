@@ -1,10 +1,40 @@
 # kin_humanoid
 
-MuJoCo-based **kinematics whole-body control** for the DYROS Tocabi v2 humanoid.
+MuJoCo-based **kinematic whole-body walking control** for the DYROS Tocabi v2 humanoid.
 
-The goal is to develop kinematics-based controllers in C++ for balancing and
-motion generation. Simulation runs in MuJoCo, rigid-body kinematics/dynamics are
-computed with RBDL, and linear algebra uses Eigen.
+Keyboard-teleoperated walking built as a clean, swappable pipeline:
+
+```
+FootstepGenerator ─▶ PreviewController ─▶ WholeBodyIK ─▶ joint targets ─▶ robot
+ (footsteps+ZMP)    (real-time 1s window)  (priority DLS)   (position servo)
+```
+
+Model information (kinematics/dynamics) and robot I/O are both behind abstract
+base classes so the backend can be swapped without touching the controller:
+
+- **Model**: `RobotModel` ← `MujocoModel` (active) / `RbdlModel` (skeleton, for later)
+- **I/O**:  `RobotIO`   ← `SimIO` (active, MuJoCo) / `RealIO` (skeleton, real robot)
+- **ROS**:  interface *location* only (`io/RosInterface.h`), implementation excluded.
+
+Simulation runs in MuJoCo; linear algebra uses Eigen; RBDL remains linked for the
+future RBDL model backend.
+
+### Controls (viewer)
+
+| Key | Action |
+|-----|--------|
+| `Space` | toggle walking on/off |
+| `W` / `S` | walk forward / backward |
+| `A` / `D` | strafe left / right (게걸음, crab walk) |
+| `Q` / `E` | turn left / right |
+| `X` | stop |
+
+> **Status**: stands stably and walks (forward / strafe) at conservative speed.
+> This is an **open-loop kinematic** walker (no ZMP/FT balance feedback yet), so
+> the lateral inverted-pendulum mode is only marginally stable — long continuous
+> walks eventually tip. A balance stabilizer (DCM/ZMP or FT-based ankle strategy)
+> is the documented next step; a hook is present (`HumanoidController::setStabilizer`,
+> experimental/off by default). See §10.
 
 ---
 
@@ -29,19 +59,33 @@ motors), total mass ≈ 95.6 kg, timestep 0.5 ms, gravity `[0, 0, -9.81]`.
 ```
 kin_humanoid_ws/
 ├── src/
-│   ├── main.cpp                 # entrypoint (load model -> RBDL self-test -> sim loop)
-│   ├── simulator/
-│   │   └── MujocoEnv.{h,cpp}     # MuJoCo load/step/render + mouse camera control
-│   ├── kinematics/             # (planned) robot kinematics/dynamics interface
-│   ├── controller/             # (planned) whole-body controller
-│   ├── model/                  # (planned)
-│   └── util/                   # (planned)
-├── model/
-│   └── dyros_tocabi_v2/        # submodule (sparse-checkout: mujoco_model + meshes only)
-├── prj/
-│   └── kinematics_humanoid.code-workspace  # VS Code workspace
-├── .vscode/                    # tasks / launch / c_cpp_properties
-└── README.md
+│   ├── main.cpp                     # entrypoint: wire SimIO + MujocoModel + controller, run loop
+│   ├── config/
+│   │   └── WalkingConfig.h          # ★ ALL tunables in one place: servo gains, gait, preview, task gains
+│   ├── util/
+│   │   ├── MathUtil.h               # rotations/quaternions, cycloid/cubic, DARE, DLS pseudo-inverse
+│   │   └── RobotDefs.h              # joint/body indices, Side enum, model dims (nq/nv/nu)
+│   ├── model/
+│   │   ├── RobotModel.h             # abstract: FK / body Jacobian / COM / COM-Jacobian
+│   │   ├── MujocoModel.{h,cpp}      # MuJoCo backend (active)  — analytic model queries
+│   │   └── RbdlModel.{h,cpp}        # RBDL backend (skeleton, TODO)
+│   ├── io/
+│   │   ├── RobotIO.h                # abstract: read state / write joint targets / velocity cmd
+│   │   ├── SimIO.{h,cpp}            # simulator backend (active) — wraps MujocoEnv
+│   │   ├── RealIO.{h,cpp}           # real-robot backend (skeleton, TODO)
+│   │   └── RosInterface.h           # ROS location only (implementation excluded)
+│   ├── controller/
+│   │   ├── WalkingState.h           # gait phase / pose types
+│   │   ├── FootstepGenerator.{h,cpp}# velocity cmd -> footsteps + ZMP preview window
+│   │   ├── PreviewController.h      # real-time 1-second-window LIPM ZMP preview
+│   │   ├── WholeBodyIK.{h,cpp}      # Nakamura priority DLS + support-consistent base slaving
+│   │   └── HumanoidController.{h,cpp}# orchestrator (footstep->preview->WBIK->joints)
+│   └── simulator/
+│       └── MujocoEnv.{h,cpp}        # MuJoCo load/step/render + mouse camera + keyboard teleop
+├── test/
+│   └── headless_walk_test.cpp       # headless verification harness (no viewer)
+├── model/dyros_tocabi_v2/           # submodule (mujoco_model + meshes only)
+├── prj/ , .vscode/ , README.md
 ```
 
 ### Dependency management
@@ -184,16 +228,72 @@ kinematics/dynamics the controller queries.
 
 ---
 
-## 9. Status / roadmap
+## 9. Control pipeline (how it works)
+
+Each control cycle (500 Hz), `HumanoidController::update()`:
+
+1. **FootstepGenerator** — from the velocity command it maintains a rolling,
+   alternating footstep plan (only the current step + swing target are committed;
+   the rest is regenerated every tick so the plan always reflects the latest
+   command). It emits the current support/swing feet, the swing-foot cycloid
+   target, and a **ZMP reference sampled over the next 1 second**.
+2. **PreviewController** — LIPM ZMP-preview (Kajita). The optimal gains (DARE) are
+   computed **once**; each tick it consumes the sliding 1-second ZMP window and the
+   current state and outputs the COM reference (position + velocity). This is the
+   "real-time 1-second-window" preview (requirement 2).
+3. **WholeBodyIK** — Nakamura **priority DLS**. The stance foot is enforced as the
+   top priority *by construction*: the base velocity is slaved to keep the support
+   foot fixed (`v_base = -Jb⁻¹ Jj v_joint`, *support-consistent reduction*), so all
+   lower tasks become functions of joint velocity only. Then, in priority order:
+   **support foot > COM > swing foot > hands > pelvis orientation**, solved by
+   successive null-space projection with damped least squares. COM uses the
+   **COM Jacobian** (requirement 5). When the support/swing feet swap, only the
+   stance/swing Jacobians change, so priorities adjust automatically (requirement 4).
+4. **Internal feed-forward integration** — the resulting joint velocities integrate
+   an internal desired state (the base propagated by the same support-foot
+   constraint), which keeps the stance foot exactly planted with no kinematic drift.
+   The joint part is sent to the position servos.
+
+Model queries (FK, body/COM Jacobians) go through `RobotModel`; today they are
+served by MuJoCo (`mj_jac`, `mj_jacSubtreeCom`) and were finite-difference
+verified. The Jacobian column convention is `[base_lin(3), base_ang(3), joints(33)]`.
+
+## 10. Status / roadmap
 
 **Done**
-- [x] MuJoCo environment wrapper (load / step / render / mouse camera)
-- [x] Keyframe init pose, ground + collision-mesh render cleanup
-- [x] Joint position control mode (position servos) — holds standing pose
-- [x] Dependency wiring (Eigen / RBDL / Tocabi model)
-- [x] VS Code build/debug environment
+- [x] MuJoCo environment wrapper (load / step / render / mouse camera / keyboard teleop)
+- [x] Joint position-servo mode; stands stably
+- [x] `RobotModel` abstraction + MuJoCo backend (RBDL backend = skeleton)
+- [x] `RobotIO` abstraction + Sim backend (Real backend = skeleton); ROS location noted
+- [x] Footstep generator with real-time replanning + ZMP preview window
+- [x] Real-time 1-second-window LIPM preview controller
+- [x] Priority-DLS whole-body IK (support-consistent, swap-on-foot-change)
+- [x] Keyboard walking: forward/back, strafe (게걸음), turn
+- [x] Headless verification harness (`test/headless_walk_test.cpp`)
 
-**Next**
-- [ ] Robot kinematics/dynamics interface (`src/kinematics`)
-- [ ] Import + modify the kinematics-based whole-body controller (`src/controller`)
-- [ ] Posture / CoM / contact tasks -> balancing and motion generation
+**Next (walking robustness)**
+- [ ] **Balance stabilizer** — the current walker is open-loop kinematic, so lateral
+      balance is only marginally stable. Add DCM/ZMP feedback or FT-based ankle
+      strategy at the hook in `HumanoidController` (measured state is already read).
+- [ ] RBDL model backend (fill `RbdlModel` once a Tocabi URDF is available)
+- [ ] Real-robot I/O backend (`RealIO`) and the ROS interface layer
+- [ ] Gains/gait auto-tuning; joint-limit & self-collision avoidance in null space
+
+### Tuning
+
+**All tunables live in one header — [`src/config/WalkingConfig.h`](src/config/WalkingConfig.h)**:
+motor position-servo gains (`kServoKp/kServoKv` — raise for stiffer joint tracking),
+gait pattern (`kStepPeriod`, `kDoubleSupportRatio`, `kStepHeight`, stride/sway limits),
+preview (`kPreviewSec`, `kComHeight`, `Q`/`R`), WBIK task gains (`kpCom/kpSwing/...`)
+and DLS damping, and teleop velocity limits. Each module's defaults read from here;
+runtime overrides exist too (`SimIO::setServoGains`, `HumanoidController::setGains`/`setGaitParams`).
+
+The headless harness `test/headless_walk_test.cpp` reads env vars for quick sweeps:
+`KIN_KP`, `KIN_KV` (servo gains), `KIN_VX`, `KIN_VY`, `KIN_VYAW` (walk speed),
+`KIN_TSTEP`, `KIN_DS`, `KIN_H` (gait), `KIN_COMZ` (COM height),
+`KIN_STAB` (experimental stabilizer), `KIN_WALKSEC`, and
+`KIN_COM/SWING/HAND/PELVIS` (task on/off). Example:
+
+```bash
+KIN_KP=8000 KIN_VX=0.04 KIN_WALKSEC=6 ./headless_test   # stiffer servo, forward walk
+```

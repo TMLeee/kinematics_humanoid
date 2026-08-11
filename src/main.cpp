@@ -1,14 +1,17 @@
-// kin_humanoid — MuJoCo 기반 휴머노이드(DYROS Tocabi) 키네마틱스 제어 엔트리포인트.
+// kin_humanoid — MuJoCo 기반 휴머노이드(DYROS Tocabi) 키네마틱 보행 제어 엔트리포인트.
 //
-// 현재는 스켈레톤이다:
-//   1) tocabi MuJoCo 모델을 로드하고 뷰어를 띄운다.
-//   2) Eigen / RBDL 링크를 소규모 자기진단으로 확인한다.
-//   3) 시뮬레이션 루프를 돌며 렌더링한다.
-// 실제 키네마틱스 기반 whole-body 제어 로직은 이후 src/kinematics, src/controller
-// 에서 확장한다(제어 라이브러리는 별도로 가져와 모디파이).
-#include "simulator/MujocoEnv.h"
-
-#include <rbdl/rbdl.h>
+// 파이프라인(요구사항 2):
+//   FootstepGenerator → PreviewController(실시간 1초 윈도우) → WholeBodyIK(우선순위 DLS)
+//   → 관절 목표 → SimIO(위치서보) → MuJoCo.
+//
+// 구성(요구사항 7,8):
+//   - 모델 정보: RobotModel(추상) ← MujocoModel(현재) / RbdlModel(틀만)
+//   - 로봇 I/O : RobotIO(추상)   ← SimIO(현재)      / RealIO(틀만)
+//
+// 조작(요구사항 6): [Space] 보행 on/off, W/S 전후, A/D 좌우 게걸음, Q/E 회전, X 정지.
+#include "io/SimIO.h"
+#include "model/MujocoModel.h"
+#include "controller/HumanoidController.h"
 
 #include <cstdio>
 #include <string>
@@ -16,80 +19,63 @@
 namespace {
 constexpr const char* kDefaultModel =
     "model/dyros_tocabi_v2/tocabi_description/mujoco_model/dyros_tocabi.xml";
-
-// 시뮬레이션 주기(Hz). 모델의 timestep 을 로드 후 이 값으로 덮어쓴다(서브모듈 무수정).
-constexpr double kSimRateHz = 500.0;   // 500 Hz -> timestep 0.002 s
-
-// 위치 서보 게인(모든 관절 공통). force = kp*(ctrl - q) - kv*qdot.
-// kinematics-level 제어에서 목표 관절각을 강성 있게 추종하도록 충분히 크게 잡는다.
-constexpr double kPositionKp = 2000.0;
-constexpr double kPositionKv = 100.0;
-
-// Eigen + RBDL 링크 및 동작을 확인하는 소규모 자기진단.
-// 3-링크 회전 체인을 만들고 순운동학(CoM)을 한 번 계산한다.
-void rbdlSelfTest() {
-    namespace R = RigidBodyDynamics;
-    namespace M = RigidBodyDynamics::Math;
-
-    R::Model model;
-    model.gravity = M::Vector3d(0.0, 0.0, -9.81);
-
-    R::Body   body(1.0, M::Vector3d(0.0, 0.0, 0.5), M::Vector3d(0.1, 0.1, 0.1));
-    R::Joint  joint(R::JointTypeRevolute, M::Vector3d(0.0, 1.0, 0.0));
-
-    unsigned int id = 0;
-    for (int i = 0; i < 3; ++i)
-        id = model.AddBody(id, M::Xtrans(M::Vector3d(0.0, 0.0, 1.0)), joint, body);
-
-    M::VectorNd q = M::VectorNd::Zero(model.dof_count);
-    double mass = 0.0;
-    M::Vector3d com = M::Vector3d::Zero();
-    R::Utils::CalcCenterOfMass(model, q, q, nullptr, mass, com);
-
-    std::printf("[rbdl] self-test OK (dof=%u, mass=%.3f, com_z=%.3f)\n",
-                model.dof_count, mass, com[2]);
 }
-}  // namespace
 
 int main(int argc, char** argv) {
     const std::string model_path = (argc > 1) ? argv[1] : kDefaultModel;
-    std::printf("[kin_humanoid] loading model: %s\n", model_path.c_str());
+    std::printf("[kin_humanoid] model: %s\n", model_path.c_str());
 
-    MujocoEnv env;
-    if (!env.load(model_path)) {
-        std::fprintf(stderr, "[kin_humanoid] failed to load model\n");
-        return 1;
-    }
-    mjModel* m = env.model();
-    std::printf("[kin_humanoid] model loaded: nq=%d nv=%d nu=%d\n",
-                m->nq, m->nv, m->nu);
-
-    // 시뮬레이션 주기를 500 Hz 로 설정(모델 기본 0.5ms → 2ms).
-    m->opt.timestep = 1.0 / kSimRateHz;
-    std::printf("[kin_humanoid] sim rate: %.0f Hz (timestep=%.4f s)\n",
-                kSimRateHz, m->opt.timestep);
-
-    // Eigen / RBDL 링크 검증.
-    rbdlSelfTest();
-
-    // 모든 관절을 위치제어 모드로 전환하고 현재(키프레임) 자세를 목표로 유지한다.
-    // 이후 kinematics-level 제어기는 매 주기 env.data()->ctrl 에 목표 관절각을 쓴다.
-    env.setJointPositionMode(kPositionKp, kPositionKv);
-    env.holdCurrentPose();
-    std::printf("[kin_humanoid] joint position mode ON (kp=%.0f, kv=%.0f), holding pose\n",
-                kPositionKp, kPositionKv);
-
-    if (!env.initViewer("kin_humanoid — DYROS Tocabi")) {
-        std::fprintf(stderr, "[kin_humanoid] viewer init failed (headless?)\n");
+    // --- 출력(시뮬레이터) I/O ---
+    kin::SimIO io(model_path, /*with_viewer=*/true);
+    if (!io.init()) {
+        std::fprintf(stderr, "[kin_humanoid] SimIO init failed\n");
         return 1;
     }
 
-    std::printf("[kin_humanoid] entering sim loop (close window to quit)\n");
-    while (!env.viewerShouldClose()) {
-        // TODO: 여기서 키네마틱스 기반 whole-body 제어를 매 제어주기마다 호출하고
-        //       목표 관절각을 env.data()->ctrl 에 기록한다(현재는 자세 유지).
-        env.step();
-        env.render();
+    // --- 모델 정보(현재는 MuJoCo 백엔드) ---
+    kin::MujocoModel model;
+    if (!model.load(model_path)) {
+        std::fprintf(stderr, "[kin_humanoid] model load failed\n");
+        return 1;
+    }
+    std::printf("[kin_humanoid] model: nq=%d nv=%d nJoints=%d mass=%.2f kg\n",
+                model.nq(), model.nv(), model.nJoints(), model.mass());
+
+    // --- 초기 상태 읽기 ---
+    kin::RobotState state;
+    io.read(state);
+
+    // --- 제어기 초기화 ---
+    kin::HumanoidController controller;
+    controller.init(&model, io.controlDt(), state);
+
+    // 관절 한계(위치서보 안정용) 설정 — 액추에이터→관절 매핑에서 가져온다.
+    {
+        mjModel* m = io.env().model();
+        kin::VectorXd lo(m->nu), hi(m->nu);
+        for (int i = 0; i < m->nu; ++i) {
+            int jid = m->actuator_trnid[2 * i];       // 액추에이터 i 가 구동하는 관절
+            if (jid >= 0 && m->jnt_limited[jid]) {
+                lo(i) = m->jnt_range[2 * jid];
+                hi(i) = m->jnt_range[2 * jid + 1];
+            } else {
+                lo(i) = -1e9; hi(i) = 1e9;
+            }
+        }
+        controller.setJointLimits(lo, hi);
+    }
+
+    std::printf("[kin_humanoid] ready. Press SPACE to walk, WASD to move.\n");
+
+    // --- 제어 루프 ---
+    while (io.running()) {
+        io.read(state);
+        kin::VelocityCommand cmd = io.velocityCommand();
+        kin::VectorXd qDes = controller.update(state, cmd);
+        io.setStatus(controller.statusText());
+        io.writeJointTargets(qDes);
+        io.step();
+        io.render();
     }
     return 0;
 }

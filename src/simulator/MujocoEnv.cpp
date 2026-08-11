@@ -227,6 +227,13 @@ void MujocoEnv::drawOverlay(const mjrRect& viewport) {
     std::snprintf(values, sizeof(values), "%.2fx\n%.1f\n%.2f s",
                   disp_rtf_, disp_fps_, d_->time);
     mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, viewport, labels, values, &con_);
+
+    // 하단: 조작 도움말 + 제어기 상태 텍스트.
+    static const char* kHelp =
+        "[W/S] fwd/back  [A/D] strafe L/R  [Q/E] turn  [Space] walk on/off  [X] stop";
+    if (!status_.empty())
+        mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMLEFT, viewport, status_.c_str(), "", &con_);
+    mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMRIGHT, viewport, kHelp, "", &con_);
 }
 
 bool MujocoEnv::viewerShouldClose() const {
@@ -278,4 +285,22 @@ void MujocoEnv::onKey(int key, int action, int /*mods*/) {
         printCamera();
         saveCamera();
     }
+}
+
+MujocoEnv::KeyInput MujocoEnv::pollKeys() {
+    KeyInput k;
+    if (!viewer_ || !window_) return k;
+    auto down = [&](int key) { return glfwGetKey(window_, key) == GLFW_PRESS; };
+    k.w = down(GLFW_KEY_W);
+    k.a = down(GLFW_KEY_A);
+    k.s = down(GLFW_KEY_S);
+    k.d = down(GLFW_KEY_D);
+    k.q = down(GLFW_KEY_Q);
+    k.e = down(GLFW_KEY_E);
+    k.x = down(GLFW_KEY_X);
+    // space 는 눌린 순간(엣지)만 true → 보행 토글용.
+    bool space_now = down(GLFW_KEY_SPACE);
+    k.space = space_now && !space_prev_;
+    space_prev_ = space_now;
+    return k;
 }

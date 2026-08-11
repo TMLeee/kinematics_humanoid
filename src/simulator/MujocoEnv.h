@@ -58,6 +58,19 @@ public:
 
     bool viewerShouldClose() const;
 
+    // --- 키보드 텔레옵 폴링 (요구사항 6: w/s 전후, a/d 좌우 게걸음) ---
+    // GLFW 를 헤더 밖으로 노출하지 않기 위해 의미 있는 키 상태만 POD 로 돌려준다.
+    struct KeyInput {
+        bool w = false, a = false, s = false, d = false;   // 이동
+        bool q = false, e = false;                         // 좌/우 회전(옵션)
+        bool space = false;                                // 보행 on/off 토글(엣지)
+        bool x = false;                                    // 정지
+    };
+    KeyInput pollKeys();
+
+    // 화면 하단에 표시할 상태 텍스트(제어기 상태/명령 등)를 설정한다.
+    void setStatusText(const std::string& text) { status_ = text; }
+
     mjModel* model() { return m_; }
     mjData*  data()  { return d_; }
 
@@ -81,6 +94,10 @@ private:
     // 마우스 상태
     bool   btn_left_ = false, btn_middle_ = false, btn_right_ = false;
     double last_x_ = 0.0, last_y_ = 0.0;
+
+    // 키보드 상태(space 엣지 검출용) / 하단 상태 텍스트
+    bool   space_prev_ = false;
+    std::string status_;
 
     // --- 좌상단 오버레이(실시간 배율/FPS/시뮬 시간) 통계 ---
     void drawOverlay(const mjrRect& viewport);

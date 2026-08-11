@@ -12,6 +12,13 @@
                 "-O0",
                 "${workspaceFolder}/src/main.cpp",
                 "${workspaceFolder}/src/simulator/MujocoEnv.cpp",
+                "${workspaceFolder}/src/model/MujocoModel.cpp",
+                "${workspaceFolder}/src/model/RbdlModel.cpp",
+                "${workspaceFolder}/src/io/SimIO.cpp",
+                "${workspaceFolder}/src/io/RealIO.cpp",
+                "${workspaceFolder}/src/controller/FootstepGenerator.cpp",
+                "${workspaceFolder}/src/controller/WholeBodyIK.cpp",
+                "${workspaceFolder}/src/controller/HumanoidController.cpp",
                 "-o",
                 "${workspaceFolder}/main",
                 "-I${workspaceFolder}/src",
@@ -43,6 +50,30 @@
                 "isDefault": true
             },
             "detail": "프로젝트 전체 빌드 (src -> ./main), MuJoCo + GLFW + Eigen/RBDL 링크"
+        },
+        {
+            "type": "shell",
+            "label": "build headless test",
+            "command": "/usr/bin/g++",
+            "args": [
+                "-std=c++17", "-O2",
+                "${workspaceFolder}/test/headless_walk_test.cpp",
+                "${workspaceFolder}/src/simulator/MujocoEnv.cpp",
+                "${workspaceFolder}/src/model/MujocoModel.cpp",
+                "${workspaceFolder}/src/io/SimIO.cpp",
+                "${workspaceFolder}/src/controller/FootstepGenerator.cpp",
+                "${workspaceFolder}/src/controller/WholeBodyIK.cpp",
+                "${workspaceFolder}/src/controller/HumanoidController.cpp",
+                "-o", "${workspaceFolder}/headless_test",
+                "-I${workspaceFolder}/src",
+                "-I/opt/mujoco/mujoco/include", "-I/usr/include/eigen3", "-I/usr/local/include",
+                "-L/opt/mujoco/mujoco/lib", "-L/usr/local/lib",
+                "-Wl,-rpath,/opt/mujoco/mujoco/lib", "-Wl,-rpath,/usr/local/lib",
+                "-lmujoco", "-lglfw", "-lGLEW", "-lGL", "-lm", "-ldl", "-lpthread"
+            ],
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": ["$gcc"],
+            "detail": "뷰어 없는 헤드리스 보행 검증 하네스 (KIN_* 환경변수로 튜닝)"
         }
     ]
 }

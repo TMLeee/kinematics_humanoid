@@ -5,6 +5,8 @@
 #include <chrono>
 #include <string>
 
+#include "viz/WalkPlotter.h"
+
 struct GLFWwindow;
 
 class MujocoEnv {
@@ -21,6 +23,21 @@ public:
 
     // 렌더링 창을 연다 (headless 로 쓰려면 호출하지 않는다).
     bool initViewer(const std::string& title = "kin_humanoid");
+
+    // 초기(자유) 카메라 각도/위치를 설정한다. initViewer 이후 호출.
+    //   azimuth/elevation: 도(deg), distance: lookat 로부터의 거리(m),
+    //   (cx,cy,cz): 바라보는 지점 lookat(m).
+    void setCamera(double azimuth, double elevation, double distance,
+                   double cx, double cy, double cz);
+
+    // 현재 카메라 파라미터를 터미널에 출력한다(뷰어에서 'P' 키).
+    void printCamera() const;
+
+    // 현재 카메라 뷰를 파일에 저장한다('P' 키에서 호출). 다음 실행 때 자동 복원된다.
+    void saveCamera() const;
+
+    // 저장된 카메라 뷰가 있으면 불러와 적용한다(있으면 true). initViewer 에서 호출.
+    bool loadCamera();
 
     // 충돌 지오메트리(그룹) 렌더링 on/off. 기본은 group 2(충돌 프리미티브) 숨김.
     void setGeomGroupVisible(int group, bool visible);
@@ -43,6 +60,23 @@ public:
 
     bool viewerShouldClose() const;
 
+    // --- 키보드 텔레옵 폴링 (요구사항 6: w/s 전후, a/d 좌우 게걸음) ---
+    // GLFW 를 헤더 밖으로 노출하지 않기 위해 의미 있는 키 상태만 POD 로 돌려준다.
+    struct KeyInput {
+        bool w = false, a = false, s = false, d = false;   // 이동
+        bool q = false, e = false;                         // 좌/우 회전(옵션)
+        bool space = false;                                // 보행 on/off 토글(엣지)
+        bool h = false;                                    // 보행준비 자세/WBC 시작(엣지)
+        bool x = false;                                    // 정지
+    };
+    KeyInput pollKeys();
+
+    // 화면 하단에 표시할 상태 텍스트(제어기 상태/명령 등)를 설정한다.
+    void setStatusText(const std::string& text) { status_ = text; }
+
+    // 실시간 보행 그래프. 매 tick 데이터를 push 하고, 'G' 키로 표시 토글.
+    kin::WalkPlotter& walkPlotter() { return plotter_; }
+
     mjModel* model() { return m_; }
     mjData*  data()  { return d_; }
 
@@ -50,6 +84,7 @@ public:
     void onMouseButton(int button, int action, int mods);
     void onMouseMove(double xpos, double ypos);
     void onScroll(double yoffset);
+    void onKey(int key, int action, int mods);
 
 private:
     mjModel* m_ = nullptr;
@@ -65,6 +100,15 @@ private:
     // 마우스 상태
     bool   btn_left_ = false, btn_middle_ = false, btn_right_ = false;
     double last_x_ = 0.0, last_y_ = 0.0;
+
+    // 키보드 상태(space/h 엣지 검출용) / 하단 상태 텍스트
+    bool   space_prev_ = false;
+    bool   h_prev_ = false;
+    std::string status_;
+
+    // 실시간 보행 그래프
+    kin::WalkPlotter plotter_;
+    bool             show_plots_ = true;   // 기본 표시('G' 로 토글)
 
     // --- 좌상단 오버레이(실시간 배율/FPS/시뮬 시간) 통계 ---
     void drawOverlay(const mjrRect& viewport);

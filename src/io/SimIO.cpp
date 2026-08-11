@@ -122,14 +122,17 @@ bool SimIO::measuredZmp(Eigen::Vector2d& zmp) const {
 VelocityCommand SimIO::velocityCommand() {
     MujocoEnv::KeyInput k = env_.pollKeys();
 
-    if (k.space) cmd_.walk = !cmd_.walk;   // 보행 on/off 토글
-    if (k.x)     cmd_.walk = false;
+    // 엣지/트리거는 그대로 제어기로 전달(보행 토글/준비 자세는 제어기가 상태로 관리).
+    cmd_.spaceEdge   = k.space;
+    cmd_.prepareEdge = k.h;
+    cmd_.stop        = k.x;
+    cmd_.walk        = false;   // 유효 보행 상태는 HumanoidController 가 설정한다.
 
-    // 목표 속도(키 홀드 기준).
-    double tvx = (k.w ? v_fwd_max_ : 0.0) + (k.s ? -v_fwd_max_ : 0.0);
-    double tvy = (k.a ? v_lat_max_ : 0.0) + (k.d ? -v_lat_max_ : 0.0);
+    // 목표 속도(키 홀드 기준). 정지(x) 면 0.
+    double tvx   = (k.w ? v_fwd_max_ : 0.0) + (k.s ? -v_fwd_max_ : 0.0);
+    double tvy   = (k.a ? v_lat_max_ : 0.0) + (k.d ? -v_lat_max_ : 0.0);
     double tvyaw = (k.q ? v_yaw_max_ : 0.0) + (k.e ? -v_yaw_max_ : 0.0);
-    if (!cmd_.walk || k.x) { tvx = tvy = tvyaw = 0.0; }
+    if (k.x) { tvx = tvy = tvyaw = 0.0; }
 
     // 부드럽게 램프.
     cmd_.vx   = ramp(cmd_.vx,   tvx,   v_accel_,   control_dt_);

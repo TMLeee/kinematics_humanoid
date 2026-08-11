@@ -233,7 +233,7 @@ void MujocoEnv::drawOverlay(const mjrRect& viewport) {
 
     // 하단: 조작 도움말 + 제어기 상태 텍스트.
     static const char* kHelp =
-        "[Space] walk  [W/S] fwd/back  [A/D] strafe  [Q/E] turn  [X] stop  [G] graph";
+        "[H] ready-pose  [Space] walk  [W/S] fwd/back  [A/D] strafe  [Q/E] turn  [X] stop  [G] graph";
     if (!status_.empty())
         mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMLEFT, viewport, status_.c_str(), "", &con_);
     mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMRIGHT, viewport, kHelp, "", &con_);
@@ -303,9 +303,12 @@ MujocoEnv::KeyInput MujocoEnv::pollKeys() {
     k.q = down(GLFW_KEY_Q);
     k.e = down(GLFW_KEY_E);
     k.x = down(GLFW_KEY_X);
-    // space 는 눌린 순간(엣지)만 true → 보행 토글용.
+    // space / h 는 눌린 순간(엣지)만 true → 토글/트리거용.
     bool space_now = down(GLFW_KEY_SPACE);
     k.space = space_now && !space_prev_;
     space_prev_ = space_now;
+    bool h_now = down(GLFW_KEY_H);
+    k.h = h_now && !h_prev_;
+    h_prev_ = h_now;
     return k;
 }

@@ -13,11 +13,14 @@ int main(int argc, char** argv) {
         (argc > 1) ? argv[1]
                    : "model/dyros_tocabi_v2/tocabi_description/mujoco_model/dyros_tocabi.xml";
 
+    // 설정 로드(객체 생성 전): config/walking_config.json → gConfig.
+    kin::config::loadFromJson(kin::config::kDefaultConfigPath);
+
     kin::SimIO io(model_path, /*with_viewer=*/false);
     // 모터 서보 이득 오버라이드(KIN_KP / KIN_KV) — init 전에 설정.
     {
-        double kp = getenv("KIN_KP") ? atof(getenv("KIN_KP")) : kin::config::kServoKp;
-        double kv = getenv("KIN_KV") ? atof(getenv("KIN_KV")) : kin::config::kServoKv;
+        double kp = getenv("KIN_KP") ? atof(getenv("KIN_KP")) : kin::config::gConfig.servoKp;
+        double kv = getenv("KIN_KV") ? atof(getenv("KIN_KV")) : kin::config::gConfig.servoKv;
         io.setServoGains(kp, kv);
     }
     if (!io.init()) { std::printf("SimIO init failed\n"); return 1; }
@@ -105,28 +108,43 @@ int main(int argc, char** argv) {
         }
     };
 
-    // --- 정지 3초 ---
-    for (int k = 0; k < nStand && io.running(); ++k) tick(kin::VelocityCommand{}, k, "STAND");
+    // --- IDLE 1.5초: 아무 입력 없이 유지(시작 튐 확인) ---
+    for (int k = 0; k < (int)std::lround(1.5 / dt) && io.running(); ++k)
+        tick(kin::VelocityCommand{}, k, "IDLE");
     io.read(state);
-    double z_after_stand = state.q(2);
-    std::printf(">> after stand: base_z=%.3f (start %.3f), fell=%s, NaN=%s\n",
-                z_after_stand, base_z0, z_after_stand < 0.6 ? "YES" : "no",
-                ok ? "no" : "YES");
+    std::printf(">> after idle: base=(%.3f,%.3f,%.3f) drift=(%.4f,%.4f)\n",
+                state.q(0), state.q(1), state.q(2), state.q(0) - base_x0, state.q(1));
 
-    // --- 전진 보행 4초 (KIN_VX 로 속도 지정, 기본 0.08; 0 이면 제자리 걸음) ---
-    kin::VelocityCommand walk; walk.walk = true;
-    walk.vx = getenv("KIN_VX") ? atof(getenv("KIN_VX")) : 0.08;
-    walk.vy = getenv("KIN_VY") ? atof(getenv("KIN_VY")) : 0.0;
-    walk.vyaw = getenv("KIN_VYAW") ? atof(getenv("KIN_VYAW")) : 0.0;
-    for (int k = 0; k < nWalk && io.running(); ++k) tick(walk, k, "WALK");
+    // --- 'h' 준비 자세 이동(엣지 한 번) 후 WBC 시작까지 대기(~3초) ---
+    { kin::VelocityCommand c; c.prepareEdge = true; tick(c, 0, "PREP"); }
+    for (int k = 1; k < (int)std::lround(3.0 / dt) && io.running(); ++k)
+        tick(kin::VelocityCommand{}, k, "PREP");
+    io.read(state);
+    std::printf(">> after prepare: base_z=%.3f mode=%s\n", state.q(2),
+                controller.mode() == kin::HumanoidController::Mode::Active ? "ACTIVE" : "NOT-ACTIVE");
+
+    // --- Space 로 보행 시작(엣지 한 번) + 속도 유지 ---
+    double vx = getenv("KIN_VX") ? atof(getenv("KIN_VX")) : 0.04;
+    double vy = getenv("KIN_VY") ? atof(getenv("KIN_VY")) : 0.0;
+    double vyaw = getenv("KIN_VYAW") ? atof(getenv("KIN_VYAW")) : 0.0;
+    double bx_walk0 = state.q(0);
+    for (int k = 0; k < nWalk && io.running(); ++k) {
+        kin::VelocityCommand c; c.vx = vx; c.vy = vy; c.vyaw = vyaw;
+        if (k == 0) c.spaceEdge = true;   // 보행 시작 토글
+        tick(c, k, "WALK");
+    }
     io.read(state);
     std::printf(">> after walk: base=(%.3f,%.3f,%.3f) dx=%.3f, fell=%s, NaN=%s\n",
-                state.q(0), state.q(1), state.q(2), state.q(0) - base_x0,
+                state.q(0), state.q(1), state.q(2), state.q(0) - bx_walk0,
                 state.q(2) < 0.6 ? "YES" : "no", ok ? "no" : "YES");
 
-    // --- 정지(graceful stop) 5초: walk=false → 마지막 스텝 마무리 후 정지 ---
+    // --- Space 로 정지(엣지 한 번) → graceful stop, 5초 유지 ---
     int nStop = (int)std::lround(5.0 / dt);
-    for (int k = 0; k < nStop && io.running(); ++k) tick(kin::VelocityCommand{}, k, "STOP");
+    for (int k = 0; k < nStop && io.running(); ++k) {
+        kin::VelocityCommand c;
+        if (k == 0) c.spaceEdge = true;   // 보행 정지 토글
+        tick(c, k, "STOP");
+    }
     io.read(state);
     std::printf(">> after stop: base=(%.3f,%.3f,%.3f), fell=%s, NaN=%s\n",
                 state.q(0), state.q(1), state.q(2),

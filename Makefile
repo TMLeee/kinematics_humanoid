@@ -30,6 +30,7 @@ MAIN_CXXFLAGS := $(COMMON) -g -O0
 MAIN_LDLIBS   := -lmujoco -lglfw -lGLEW -lGL -lrbdl -lrbdl_urdfreader -lm -ldl -lpthread
 MAIN_SRCS := \
     src/main.cpp \
+    src/config/WalkingConfig.cpp \
     src/simulator/MujocoEnv.cpp \
     src/model/MujocoModel.cpp \
     src/model/RbdlModel.cpp \
@@ -45,6 +46,7 @@ TEST_CXXFLAGS := $(COMMON) -O2
 TEST_LDLIBS   := -lmujoco -lglfw -lGLEW -lGL -lm -ldl -lpthread
 TEST_SRCS := \
     test/headless_walk_test.cpp \
+    src/config/WalkingConfig.cpp \
     src/simulator/MujocoEnv.cpp \
     src/model/MujocoModel.cpp \
     src/io/SimIO.cpp \

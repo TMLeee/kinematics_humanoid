@@ -66,6 +66,7 @@ public:
         bool w = false, a = false, s = false, d = false;   // 이동
         bool q = false, e = false;                         // 좌/우 회전(옵션)
         bool space = false;                                // 보행 on/off 토글(엣지)
+        bool h = false;                                    // 보행준비 자세/WBC 시작(엣지)
         bool x = false;                                    // 정지
     };
     KeyInput pollKeys();
@@ -100,8 +101,9 @@ private:
     bool   btn_left_ = false, btn_middle_ = false, btn_right_ = false;
     double last_x_ = 0.0, last_y_ = 0.0;
 
-    // 키보드 상태(space 엣지 검출용) / 하단 상태 텍스트
+    // 키보드 상태(space/h 엣지 검출용) / 하단 상태 텍스트
     bool   space_prev_ = false;
+    bool   h_prev_ = false;
     std::string status_;
 
     // 실시간 보행 그래프

@@ -9,6 +9,7 @@
 //   - 로봇 I/O : RobotIO(추상)   ← SimIO(현재)      / RealIO(틀만)
 //
 // 조작(요구사항 6): [Space] 보행 on/off, W/S 전후, A/D 좌우 게걸음, Q/E 회전, X 정지.
+#include "config/WalkingConfig.h"
 #include "io/SimIO.h"
 #include "model/MujocoModel.h"
 #include "controller/HumanoidController.h"
@@ -24,6 +25,17 @@ constexpr const char* kDefaultModel =
 int main(int argc, char** argv) {
     const std::string model_path = (argc > 1) ? argv[1] : kDefaultModel;
     std::printf("[kin_humanoid] model: %s\n", model_path.c_str());
+
+    // --- 설정 로드(다른 무엇보다 먼저): config/walking_config.json → gConfig ---
+    //     각 모듈의 기본값이 gConfig 를 읽으므로 반드시 객체 생성 전에 로드한다.
+    //     파일이 없으면 기본값으로 새로 생성한다.
+    const std::string cfg_path = (argc > 2) ? argv[2] : kin::config::kDefaultConfigPath;
+    if (kin::config::loadFromJson(cfg_path)) {
+        std::printf("[kin_humanoid] config loaded: %s\n", cfg_path.c_str());
+    } else {
+        kin::config::saveToJson(cfg_path);
+        std::printf("[kin_humanoid] config not found → created defaults: %s\n", cfg_path.c_str());
+    }
 
     // --- 출력(시뮬레이터) I/O ---
     kin::SimIO io(model_path, /*with_viewer=*/true);

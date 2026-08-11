@@ -23,12 +23,22 @@ future RBDL model backend.
 
 | Key | Action |
 |-----|--------|
-| `Space` | toggle walking on/off |
+| `H` | go to the walk-ready posture, then start the whole-body controller |
+| `Space` | toggle walking on/off (only after `H`) |
 | `W` / `S` | walk forward / backward |
 | `A` / `D` | strafe left / right (게걸음, crab walk) |
 | `Q` / `E` | turn left / right |
 | `X` | stop |
 | `G` | toggle the real-time walking graphs |
+
+### Startup flow (no jump at start)
+
+The controller boots in **Idle**: it just holds the initial pose stiffly (the
+footstep generator / preview / IK are **not** running), so there is no start-up
+transient. Press **`H`** to smoothly crouch into the walk-ready posture (~2.5 s);
+on arrival the whole-body controller starts and balances in place (**Active**).
+Then **`Space`** begins walking. This staged bring-up removes the program-start
+and walk-start jolts.
 
 ### Walking graphs (`G`)
 
@@ -69,7 +79,7 @@ kin_humanoid_ws/
 ├── src/
 │   ├── main.cpp                     # entrypoint: wire SimIO + MujocoModel + controller, run loop
 │   ├── config/
-│   │   └── WalkingConfig.h          # ★ ALL tunables in one place: servo gains, gait, preview, task gains
+│   │   └── WalkingConfig.{h,cpp}    # runtime config struct + JSON loader (values live in config/walking_config.json)
 │   ├── util/
 │   │   ├── MathUtil.h               # rotations/quaternions, cycloid/cubic, DARE, DLS pseudo-inverse
 │   │   └── RobotDefs.h              # joint/body indices, Side enum, model dims (nq/nv/nu)
@@ -289,14 +299,17 @@ verified. The Jacobian column convention is `[base_lin(3), base_ang(3), joints(3
 
 ### Tuning
 
-**All tunables live in one header — [`src/config/WalkingConfig.h`](src/config/WalkingConfig.h)**:
-motor position-servo gains (`kServoKp/kServoKv` — raise for stiffer joint tracking),
-gait pattern (`kStepPeriod`, plus **separate `kStepPeriodStart`/`kStepPeriodEnd`** that
+**All tunables live in one JSON file — [`config/walking_config.json`](config/walking_config.json)** —
+loaded at startup (no recompile needed; edit the JSON and re-run). It holds:
+motor position-servo gains (`servoKp/servoKv` — raise for stiffer joint tracking),
+gait pattern (`stepPeriod`, plus **separate `stepPeriodStart`/`stepPeriodEnd`** that
 make the first/last steps slower to soften the walk-start/stop ZMP transient,
-`kDoubleSupportRatio`, `kStepHeight`, stride/sway limits),
-preview (`kPreviewSec`, `kComHeight`, `Q`/`R`), CLIK task gains (`kpCom/kpSwing/...`
-= the closed-loop IK error gains) and DLS damping, and teleop velocity limits.
-Each module's defaults read from here;
+`doubleSupportRatio`, `stepHeight`, stride/sway limits),
+preview (`previewSec`, `comHeight`, `previewQe`/`previewR`), CLIK task gains
+(`kpCom/kpSwing/...` = the closed-loop IK error gains) and DLS damping, and teleop
+velocity limits. `main`/`headless_test` call `kin::config::loadFromJson()` before
+constructing anything, so every module's defaults read the loaded `gConfig` (a missing
+file is auto-created from safe defaults). Each module's values come from here;
 runtime overrides exist too (`SimIO::setServoGains`, `HumanoidController::setGains`/`setGaitParams`).
 
 The headless harness `test/headless_walk_test.cpp` reads env vars for quick sweeps:

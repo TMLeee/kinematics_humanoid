@@ -38,12 +38,43 @@ void HumanoidController::init(RobotModel* model, double dt, const RobotState& s0
         }
     }
 
-    // 내부 상태를 측정 초기자세로 시드.
-    basePos_  = s0.q.head(3);
-    baseQuat_ = Quaterniond(s0.q(3), s0.q(4), s0.q(5), s0.q(6));  // (w,x,y,z)
+    // Idle 유지 자세 = 측정 초기 자세(관절). WBC 는 아직 돌리지 않는다.
+    holdPose_  = s0.q.segment(kBaseQ, nJoints_);
+    jointsInt_ = holdPose_;
+    basePos_   = s0.q.head(3);
+    baseQuat_  = Quaterniond(s0.q(3), s0.q(4), s0.q(5), s0.q(6));  // (w,x,y,z)
     baseQuat_.normalize();
-    jointsInt_ = s0.q.segment(kBaseQ, nJoints_);
     qInt_ = s0.q;
+
+    // 보행 준비 자세: 무릎을 조금 더 굽힌 안정적 스탠스(발바닥은 수평 유지:
+    // hipPitch+knee+anklePitch = 0). COM 이 낮아져 측면 안정성이 좋아진다.
+    readyPose_ = holdPose_;
+    const double hp = -0.40, kn = 0.80, ap = -0.40;   // flat-foot: -0.4+0.8-0.4=0
+    for (Side sd : {Side::Left, Side::Right}) {
+        int b = legJointStart(sd);                    // 0(L)/6(R): HipYaw..AnkleRoll
+        readyPose_(b + 0) = 0.0;   // HipYaw
+        readyPose_(b + 1) = 0.0;   // HipRoll
+        readyPose_(b + 2) = hp;    // HipPitch
+        readyPose_(b + 3) = kn;    // Knee
+        readyPose_(b + 4) = ap;    // AnklePitch
+        readyPose_(b + 5) = 0.0;   // AnkleRoll
+    }
+    readyPose_(Waist1) = 0.0; readyPose_(Waist2) = 0.0; readyPose_(Upperbody) = 0.0;
+
+    mode_ = Mode::Idle;
+    walkEnabled_ = false;
+    prevWalking_ = false;
+    first_ = true;
+}
+
+// 준비 자세(현재 측정 상태)에서 WBC(footstep/preview/IK)를 초기화하고 Active 로 진입.
+void HumanoidController::startWBC(const RobotState& s) {
+    // 내부 모델을 현재 측정 상태(준비 자세)로 시드.
+    basePos_  = s.q.head(3);
+    baseQuat_ = Quaterniond(s.q(3), s.q(4), s.q(5), s.q(6));
+    baseQuat_.normalize();
+    jointsInt_ = s.q.segment(kBaseQ, nJoints_);
+    qInt_ = s.q;
 
     model_->setState(qInt_, VectorXd::Zero(model_->nv()));
     model_->updateKinematics();
@@ -51,19 +82,16 @@ void HumanoidController::init(RobotModel* model, double dt, const RobotState& s0
     Vector3d com = model_->com();
     comRefZ_ = (comHeightOverride_ > 0.0) ? comHeightOverride_ : com.z();
 
-    // 초기 양발 착지 포즈(발바닥 기준).
     Vector3d lf = model_->bodyPos(idLFoot_, soleOffset_);
     Vector3d rf = model_->bodyPos(idRFoot_, soleOffset_);
     Pose2 left{lf.x(), lf.y(), yawOf(model_->bodyRot(idLFoot_))};
     Pose2 right{rf.x(), rf.y(), yawOf(model_->bodyRot(idRFoot_))};
     footstep_.init(left, right, comRefZ_, gait_);
 
-    // preview: dt·COM높이에만 의존하는 게인 1회 계산 후, 현재 COM 으로 리셋.
-    preview_.init(dt_, comRefZ_, config::kPreviewSec, config::kGravity,
-                  config::kPreviewQe, config::kPreviewR);
+    preview_.init(dt_, comRefZ_, config::gConfig.previewSec, config::gConfig.gravity,
+                  config::gConfig.previewQe, config::gConfig.previewR);
     preview_.reset(Eigen::Vector2d(com.x(), com.y()));
 
-    // 손을 골반 프레임에 고정하기 위한 상대 변환 저장.
     Matrix3d Rp = model_->bodyRot(idPelvis_);
     Vector3d pp = model_->bodyPos(idPelvis_);
     for (int i = 0; i < 2; ++i) {
@@ -76,10 +104,50 @@ void HumanoidController::init(RobotModel* model, double dt, const RobotState& s0
 
     prevSwing_ = footstep_.swingFootTarget();
     prevWalking_ = false;
+    walkEnabled_ = false;
+    haveComMeas_ = false;
     first_ = true;
 }
 
 VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& cmd) {
+    // ===== 모드 상태 머신 =====
+    // 'h' : 보행 준비 자세로 전환 시작(Preparing). Preparing 중이 아니면 언제든.
+    if (cmd.prepareEdge && mode_ != Mode::Preparing) {
+        mode_ = Mode::Preparing;
+        prepStart_ = jointsInt_;
+        prepT_ = 0.0;
+        walkEnabled_ = false;
+    }
+
+    // Idle: WBC off, 초기 자세 그대로 유지(시작 시 튐 없음).
+    if (mode_ == Mode::Idle) {
+        jointsInt_ = holdPose_;
+        dbg_.walking = false;
+        status_ = "mode:IDLE   [H] go to walk-ready pose";
+        return jointsInt_;
+    }
+
+    // Preparing: 준비 자세로 관절을 smoothstep 보간(경계 속도 0 → 부드럽게). WBC off.
+    if (mode_ == Mode::Preparing) {
+        prepT_ += dt_;
+        double a = std::min(1.0, prepT_ / prepDuration_);
+        double s3 = a * a * (3.0 - 2.0 * a);            // smoothstep
+        jointsInt_ = prepStart_ + (readyPose_ - prepStart_) * s3;
+        dbg_.walking = false;
+        char b[96];
+        std::snprintf(b, sizeof(b), "mode:PREPARING  %.0f%%  (moving to walk-ready pose)", a * 100.0);
+        status_ = b;
+        if (a >= 1.0) { startWBC(s); mode_ = Mode::Active; }  // 준비 완료 → WBC 시작
+        return jointsInt_;
+    }
+
+    // ===== Active: WBC 실행 =====
+    // Space: 보행 시작/정지 토글, x: 즉시 정지.  유효 보행 상태 walkEnabled_ 를 footstep 에 전달.
+    if (cmd.spaceEdge) walkEnabled_ = !walkEnabled_;
+    if (cmd.stop)      walkEnabled_ = false;
+    VelocityCommand fcmd = cmd;
+    fcmd.walk = walkEnabled_;
+
     // 0) (안정화 사용 시) 측정 상태에서 실제 COM 을 먼저 구한다.
     Eigen::Vector2d comMeas(0, 0), comVelMeas(0, 0);
     bool useStab = (stabAlpha_ > 0.0) && s.valid && (s.q.size() == model_->nq());
@@ -104,7 +172,7 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     Vector3d com = model_->com();
 
     // 2) 발걸음 생성기.
-    footstep_.update(dt_, cmd);
+    footstep_.update(dt_, fcmd);
     if (footstep_.walking() != prevWalking_)
         preview_.reset(Eigen::Vector2d(com.x(), com.y()));   // 상태 전환 시 점프 방지
     prevWalking_ = footstep_.walking();
@@ -229,12 +297,12 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     // 상태 텍스트.
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-        "walk:%s  support:%s  phase:%s  cmd(vx=%.2f vy=%.2f wz=%.2f)  com=(%.3f,%.3f) ref=(%.3f,%.3f)",
+        "mode:ACTIVE  walk:%s  support:%s  phase:%s  cmd(vx=%.2f vy=%.2f wz=%.2f)  com=(%.3f,%.3f) ref=(%.3f,%.3f)  [Space]walk",
         footstep_.walking() ? "ON " : "off",
         sup == Side::Left ? "L" : "R",
         footstep_.phase() == GaitPhase::SingleSupport ? "SS"
             : footstep_.phase() == GaitPhase::DoubleSupport ? "DS" : "stand",
-        cmd.vx, cmd.vy, cmd.vyaw, com.x(), com.y(), comRef(0), comRef(1));
+        fcmd.vx, fcmd.vy, fcmd.vyaw, com.x(), com.y(), comRef(0), comRef(1));
     status_ = buf;
 
     // 그래프/디버그용 신호 기록.

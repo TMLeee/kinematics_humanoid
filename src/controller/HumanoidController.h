@@ -23,19 +23,19 @@ namespace kin {
 
 class HumanoidController {
 public:
-    // 기본값은 모두 config/WalkingConfig.h 에서 온다(한 곳에서 튜닝).
+    // 기본값은 모두 전역 설정 gConfig(=JSON 로드) 에서 온다.
     struct Gains {
-        double kpCom    = config::kpCom;
-        double kpSwing  = config::kpSwing;
-        double kpHand   = config::kpHand;
-        double kpPelvis = config::kpPelvis;
-        double kpWaist  = config::kpWaist;
-        double lamSupport = config::kLamSupport;
-        double lamCom     = config::kLamCom;
-        double lamSwing   = config::kLamSwing;
-        double lamHand    = config::kLamHand;
-        double lamPelvis  = config::kLamPelvis;
-        double lamWaist   = config::kLamWaist;
+        double kpCom    = config::gConfig.kpCom;
+        double kpSwing  = config::gConfig.kpSwing;
+        double kpHand   = config::gConfig.kpHand;
+        double kpPelvis = config::gConfig.kpPelvis;
+        double kpWaist  = config::gConfig.kpWaist;
+        double lamSupport = config::gConfig.lamSupport;
+        double lamCom     = config::gConfig.lamCom;
+        double lamSwing   = config::gConfig.lamSwing;
+        double lamHand    = config::gConfig.lamHand;
+        double lamPelvis  = config::gConfig.lamPelvis;
+        double lamWaist   = config::gConfig.lamWaist;
     };
 
     // task on/off (튜닝/디버그용). 기본 전부 on.
@@ -43,6 +43,14 @@ public:
     void setEnable(const Enable& e) { en_ = e; }
 
     void init(RobotModel* model, double dt, const RobotState& s0);
+
+    // 동작 모드:
+    //   Idle      : 프로그램 시작 직후. WBC(footstep/preview/IK) 를 돌리지 않고 초기
+    //               자세를 그대로 유지만 한다 → 시작 시 튐 없음. 'h' 로 Preparing 진입.
+    //   Preparing : 보행 준비 자세로 관절을 부드럽게 보간(WBC 아직 off).
+    //   Active    : 준비 자세에서 WBC 시작(정지 균형 유지). Space 로 보행 on/off.
+    enum class Mode { Idle, Preparing, Active };
+    Mode mode() const { return mode_; }
 
     // 관절 목표각(nJoints) 계산.
     VectorXd update(const RobotState& s, const VelocityCommand& cmd);
@@ -72,9 +80,20 @@ public:
     const DebugSignals& debug() const { return dbg_; }
 
 private:
+    void startWBC(const RobotState& s);   // 준비 자세에서 WBC(footstep/preview/IK) 초기화·시작
+
     RobotModel* model_ = nullptr;
     double dt_ = 0.002;
     int nJoints_ = kNjoints;
+
+    // 모드 상태 머신
+    Mode     mode_ = Mode::Idle;
+    VectorXd holdPose_;              // Idle 유지 자세(관절)
+    VectorXd readyPose_;             // 보행 준비 자세(관절 목표)
+    VectorXd prepStart_;             // Preparing 시작 시 관절
+    double   prepT_ = 0.0;           // Preparing 경과 시간 [s]
+    double   prepDuration_ = 2.5;    // 준비 자세 이동 시간 [s]
+    bool     walkEnabled_ = false;   // Active 에서 Space 로 토글되는 유효 보행 상태
 
     FootstepGenerator footstep_;
     PreviewController preview_;
@@ -86,7 +105,7 @@ private:
     int idPelvis_ = -1, idLFoot_ = -1, idRFoot_ = -1, idLHand_ = -1, idRHand_ = -1;
 
     double comRefZ_ = 0.88;                       // 유지할 COM 높이(world z)
-    double comHeightOverride_ = config::kComHeight; // >0 이면 이 높이로 override
+    double comHeightOverride_ = config::gConfig.comHeight; // >0 이면 이 높이로 override
     Vector3d soleOffset_{0, 0, kSoleOffsetZ};
 
     // 내부(피드포워드) 모델 상태: 지지발을 정확히 고정한 채 base 를 지지발 제약으로

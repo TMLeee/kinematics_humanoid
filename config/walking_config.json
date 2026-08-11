@@ -1,0 +1,43 @@
+{
+  "_comment": "kin_humanoid 보행 제어 설정. 시작 시 이 파일을 읽어 반영한다. 값만 바꿔 재실행하면 되고, 재컴파일 불필요.",
+
+  "controlDt": 0.002,
+
+  "servoKp": 20000.0,
+  "servoKv": 500.0,
+
+  "stepPeriod": 2.0,
+  "stepPeriodStart": 5.0,
+  "stepPeriodEnd": 5.0,
+  "startRampSteps": 2,
+  "doubleSupportRatio": 0.4,
+  "stepHeight": 0.05,
+  "halfWidth": 0.1025,
+  "maxStridePerStep": 0.20,
+  "maxSwayPerStep": 0.12,
+
+  "comHeight": 0.0,
+  "previewSec": 1.0,
+  "gravity": 9.81,
+  "previewQe": 1.0,
+  "previewR": 1.0e-6,
+
+  "kpCom": 6.0,
+  "kpSwing": 12.0,
+  "kpHand": 4.0,
+  "kpPelvis": 3.0,
+  "kpWaist": 2.0,
+
+  "lamSupport": 1.0e-3,
+  "lamCom": 1.0e-3,
+  "lamSwing": 1.0e-3,
+  "lamHand": 1.0e-2,
+  "lamPelvis": 1.0e-2,
+  "lamWaist": 1.0e-2,
+
+  "vFwdMax": 0.06,
+  "vLatMax": 0.04,
+  "vYawMax": 0.20,
+  "vAccel": 0.3,
+  "yawAccel": 1.0
+}

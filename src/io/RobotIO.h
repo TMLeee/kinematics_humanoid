@@ -20,7 +20,11 @@ struct VelocityCommand {
     double vx   = 0.0;   // 전(+)/후(-) 속도 [m/s]
     double vy   = 0.0;   // 좌(+)/우(-) 게걸음 속도 [m/s]
     double vyaw = 0.0;   // 제자리 회전 속도 [rad/s] (옵션: q/e)
-    bool   walk = false; // 보행 on/off 토글 상태
+
+    bool walk = false;        // 유효 보행 상태(HumanoidController 가 설정; footstep 이 읽음)
+    bool spaceEdge = false;   // Space 눌림(엣지): 보행 시작/정지 토글 요청
+    bool prepareEdge = false; // 'h' 눌림(엣지): 보행준비 자세로 이동 후 WBC 시작
+    bool stop = false;        // 'x': 즉시 정지
 };
 
 // 로봇 측정 상태(현재값).

@@ -19,17 +19,17 @@ namespace kin {
 
 class FootstepGenerator {
 public:
-    // 기본값은 모두 config/WalkingConfig.h 에서 온다(한 곳에서 튜닝).
+    // 기본값은 모두 전역 설정 gConfig(=JSON 로드) 에서 온다.
     struct Params {
-        double Tstep      = config::kStepPeriod;
-        double TstepStart = config::kStepPeriodStart;   // 시작 스텝 주기
-        double TstepEnd   = config::kStepPeriodEnd;     // 정지 스텝 주기
-        int    startRamp  = config::kStartRampSteps;    // 시작→정상 램프 스텝 수
-        double dsRatio    = config::kDoubleSupportRatio;
-        double stepHeight = config::kStepHeight;
-        double halfWidth  = config::kHalfStanceWidth;
-        double maxStride  = config::kMaxStridePerStep;
-        double maxSway    = config::kMaxSwayPerStep;
+        double Tstep      = config::gConfig.stepPeriod;
+        double TstepStart = config::gConfig.stepPeriodStart;   // 시작 스텝 주기
+        double TstepEnd   = config::gConfig.stepPeriodEnd;     // 정지 스텝 주기
+        int    startRamp  = config::gConfig.startRampSteps;    // 시작→정상 램프 스텝 수
+        double dsRatio    = config::gConfig.doubleSupportRatio;
+        double stepHeight = config::gConfig.stepHeight;
+        double halfWidth  = config::gConfig.halfWidth;
+        double maxStride  = config::gConfig.maxStridePerStep;
+        double maxSway    = config::gConfig.maxSwayPerStep;
     };
 
     void init(const Pose2& leftFoot, const Pose2& rightFoot, double comZ, const Params& p);

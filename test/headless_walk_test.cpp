@@ -108,6 +108,14 @@ int main(int argc, char** argv) {
                 state.q(0), state.q(1), state.q(2), state.q(0) - base_x0,
                 state.q(2) < 0.6 ? "YES" : "no", ok ? "no" : "YES");
 
+    // --- 정지(graceful stop) 5초: walk=false → 마지막 스텝 마무리 후 정지 ---
+    int nStop = (int)std::lround(5.0 / dt);
+    for (int k = 0; k < nStop && io.running(); ++k) tick(kin::VelocityCommand{}, k, "STOP");
+    io.read(state);
+    std::printf(">> after stop: base=(%.3f,%.3f,%.3f), fell=%s, NaN=%s\n",
+                state.q(0), state.q(1), state.q(2),
+                state.q(2) < 0.6 ? "YES" : "no", ok ? "no" : "YES");
+
     std::printf("RESULT: %s\n", (ok && state.q(2) > 0.6) ? "PASS (no NaN, stayed upright)"
                                                           : "CHECK (see above)");
     return 0;

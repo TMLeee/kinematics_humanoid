@@ -29,6 +29,9 @@ bool SimIO::init() {
     std::printf("[SimIO] physics dt=%.4f, control dt=%.4f, substeps=%d\n",
                 phys_dt, control_dt_, substeps_);
 
+    base_body_ = mj_name2id(m, mjOBJ_BODY, "base_link");
+    if (base_body_ < 0) base_body_ = 1;
+
     // 모든 관절 위치제어 모드 + 현재(키프레임) 자세 유지.
     env_.setJointPositionMode(servo_kp_, servo_kv_);
     env_.holdCurrentPose();
@@ -86,6 +89,34 @@ void SimIO::render() {
         env_.render();
         last_render_sim_ = t;
     }
+}
+
+Eigen::Vector2d SimIO::measuredCom() const {
+    mjData* d = const_cast<MujocoEnv&>(env_).data();
+    const mjtNum* c = d->subtree_com + 3 * base_body_;
+    return Eigen::Vector2d(c[0], c[1]);
+}
+
+bool SimIO::measuredZmp(Eigen::Vector2d& zmp) const {
+    mjModel* m = const_cast<MujocoEnv&>(env_).model();
+    mjData*  d = const_cast<MujocoEnv&>(env_).data();
+    double fz_tot = 0.0, sx = 0.0, sy = 0.0;
+    mjtNum f6[6];
+    for (int i = 0; i < d->ncon; ++i) {
+        mj_contactForce(m, d, i, f6);            // 접촉 프레임 기준 wrench
+        const mjContact& c = d->contact[i];
+        // 접촉 프레임 축(world)로 힘을 world 좌표로 변환: fw = Σ f_k * frame_row_k
+        mjtNum fw2 = c.frame[0 * 3 + 2] * f6[0]  // world z 성분만 필요(수직력)
+                   + c.frame[1 * 3 + 2] * f6[1]
+                   + c.frame[2 * 3 + 2] * f6[2];
+        if (fw2 <= 0.0) continue;
+        fz_tot += fw2;
+        sx += c.pos[0] * fw2;
+        sy += c.pos[1] * fw2;
+    }
+    if (fz_tot < 1e-6) return false;             // 공중(접촉 없음)
+    zmp = Eigen::Vector2d(sx / fz_tot, sy / fz_tot);
+    return true;
 }
 
 VelocityCommand SimIO::velocityCommand() {

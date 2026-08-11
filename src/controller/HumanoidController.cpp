@@ -224,6 +224,16 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
         cmd.vx, cmd.vy, cmd.vyaw, com.x(), com.y(), comRef(0), comRef(1));
     status_ = buf;
 
+    // 그래프/디버그용 신호 기록.
+    {
+        double zx, zy; footstep_.currentZmp(zx, zy);
+        Pose2 sp = footstep_.supportFootPose();
+        dbg_.footstep = Eigen::Vector2d(sp.x, sp.y);
+        dbg_.zmpRef   = Eigen::Vector2d(zx, zy);
+        dbg_.comRef   = comRef;
+        dbg_.walking  = footstep_.walking();
+    }
+
     first_ = false;
     return jointsInt_;
 }

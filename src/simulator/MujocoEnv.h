@@ -5,6 +5,8 @@
 #include <chrono>
 #include <string>
 
+#include "viz/WalkPlotter.h"
+
 struct GLFWwindow;
 
 class MujocoEnv {
@@ -71,6 +73,9 @@ public:
     // 화면 하단에 표시할 상태 텍스트(제어기 상태/명령 등)를 설정한다.
     void setStatusText(const std::string& text) { status_ = text; }
 
+    // 실시간 보행 그래프. 매 tick 데이터를 push 하고, 'G' 키로 표시 토글.
+    kin::WalkPlotter& walkPlotter() { return plotter_; }
+
     mjModel* model() { return m_; }
     mjData*  data()  { return d_; }
 
@@ -98,6 +103,10 @@ private:
     // 키보드 상태(space 엣지 검출용) / 하단 상태 텍스트
     bool   space_prev_ = false;
     std::string status_;
+
+    // 실시간 보행 그래프
+    kin::WalkPlotter plotter_;
+    bool             show_plots_ = true;   // 기본 표시('G' 로 토글)
 
     // --- 좌상단 오버레이(실시간 배율/FPS/시뮬 시간) 통계 ---
     void drawOverlay(const mjrRect& viewport);

@@ -22,6 +22,9 @@ public:
     // 기본값은 모두 config/WalkingConfig.h 에서 온다(한 곳에서 튜닝).
     struct Params {
         double Tstep      = config::kStepPeriod;
+        double TstepStart = config::kStepPeriodStart;   // 시작 스텝 주기
+        double TstepEnd   = config::kStepPeriodEnd;     // 정지 스텝 주기
+        int    startRamp  = config::kStartRampSteps;    // 시작→정상 램프 스텝 수
         double dsRatio    = config::kDoubleSupportRatio;
         double stepHeight = config::kStepHeight;
         double halfWidth  = config::kHalfStanceWidth;
@@ -73,6 +76,7 @@ private:
     int  currentIndex() const;             // t_ 를 포함하는 지지구간 인덱스
     void appendSupport(Side side);         // 앵커에서 다음 지지구간 하나 추가
     void zmpAt(double t, double& zx, double& zy) const;
+    double stepPeriod(int stepIdx) const;  // 스텝 인덱스(1=첫스텝)별 주기(시작/끝 램프)
 
     Params p_;
     std::vector<Support> plan_;
@@ -95,6 +99,8 @@ private:
 
     VelocityCommand cmd_;
     int prev_cur_ = -1;                    // 지지 교체 검출용
+    int  step_count_ = 0;                  // append 된 스텝 인덱스(시작 램프용)
+    bool stopping_ = false;                // 정지 요청 후 마지막 스텝 마무리 중
 };
 
 }  // namespace kin

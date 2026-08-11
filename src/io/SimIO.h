@@ -28,6 +28,11 @@ public:
     // 모터 위치 서보 제어 이득 설정(init 전에 호출). 기본값은 config::kServoKp/Kv.
     void setServoGains(double kp, double kv) { servo_kp_ = kp; servo_kv_ = kv; }
 
+    // 측정 COM (sim 의 subtree_com, world x,y).
+    Eigen::Vector2d measuredCom() const;
+    // 측정 ZMP = 지면 접촉 CoP (world x,y). 접촉 없으면(공중) false.
+    bool measuredZmp(Eigen::Vector2d& zmp) const;
+
     MujocoEnv& env() { return env_; }
 
 private:
@@ -42,6 +47,7 @@ private:
     double control_dt_ = config::kControlDt;   // 제어 주기 [s]
     int    substeps_   = 4;                     // control_dt / physics_timestep
     double last_render_sim_ = -1e9;
+    int    base_body_ = 1;                      // subtree_com 루트(base_link)
 
     VelocityCommand cmd_;          // 램프된 현재 명령
 

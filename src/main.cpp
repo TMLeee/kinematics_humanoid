@@ -74,6 +74,14 @@ int main(int argc, char** argv) {
         kin::VectorXd qDes = controller.update(state, cmd);
         io.setStatus(controller.statusText());
         io.writeJointTargets(qDes);
+
+        // 실시간 그래프 데이터: 목표(제어기) + 측정(시뮬레이터).
+        const auto& dbg = controller.debug();
+        Eigen::Vector2d zmpMeas;
+        bool zmpValid = io.measuredZmp(zmpMeas);
+        io.env().walkPlotter().push(io.env().data()->time,
+            dbg.footstep, dbg.zmpRef, dbg.comRef, io.measuredCom(), zmpMeas, zmpValid);
+
         io.step();
         io.render();
     }

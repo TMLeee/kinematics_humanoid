@@ -80,6 +80,8 @@ bool MujocoEnv::initViewer(const std::string& title) {
     mjv_makeScene(m_, &scn_, 2000);
     mjr_makeContext(m_, &con_, mjFONTSCALE_150);
 
+    plotter_.init();
+
     // 초기 카메라: 기본값을 잡은 뒤, 저장된 뷰(camera_view.cfg)가 있으면 그것으로 덮어쓴다.
     // 뷰어에서 'P' 를 누르면 현재 뷰가 저장되어 다음 실행 때 이 위치로 열린다.
     setCamera(/*azimuth=*/127.0, /*elevation=*/-17.0, /*distance=*/3.500,
@@ -195,6 +197,7 @@ bool MujocoEnv::render() {
     mjv_updateScene(m_, d_, &opt_, nullptr, &cam_, mjCAT_ALL, &scn_);
     mjr_render(viewport, &scn_, &con_);
     drawOverlay(viewport);
+    if (show_plots_) plotter_.render(viewport, &con_);
 
     glfwSwapBuffers(window_);
     glfwPollEvents();
@@ -230,7 +233,7 @@ void MujocoEnv::drawOverlay(const mjrRect& viewport) {
 
     // 하단: 조작 도움말 + 제어기 상태 텍스트.
     static const char* kHelp =
-        "[W/S] fwd/back  [A/D] strafe L/R  [Q/E] turn  [Space] walk on/off  [X] stop";
+        "[Space] walk  [W/S] fwd/back  [A/D] strafe  [Q/E] turn  [X] stop  [G] graph";
     if (!status_.empty())
         mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMLEFT, viewport, status_.c_str(), "", &con_);
     mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMRIGHT, viewport, kHelp, "", &con_);
@@ -285,6 +288,8 @@ void MujocoEnv::onKey(int key, int action, int /*mods*/) {
         printCamera();
         saveCamera();
     }
+    // 'G': 보행 그래프 표시 토글.
+    if (key == GLFW_KEY_G) show_plots_ = !show_plots_;
 }
 
 MujocoEnv::KeyInput MujocoEnv::pollKeys() {

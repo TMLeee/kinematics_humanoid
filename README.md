@@ -28,6 +28,14 @@ future RBDL model backend.
 | `A` / `D` | strafe left / right (게걸음, crab walk) |
 | `Q` / `E` | turn left / right |
 | `X` | stop |
+| `G` | toggle the real-time walking graphs |
+
+### Walking graphs (`G`)
+
+A built-in real-time plot overlay (MuJoCo `mjvFigure`, no external deps) shows two
+time-series panels — **Lateral (Y)** and **Sagittal (X)** — each overlaying five
+signals so the walk-start transient is easy to see: **footstep** (support), **ZMP
+reference**, **COM reference**, **measured ZMP** (ground CoP), **measured COM**.
 
 > **Status**: stands stably and walks (forward / strafe) at conservative speed.
 > This is an **open-loop kinematic** walker (no ZMP/FT balance feedback yet), so
@@ -283,9 +291,12 @@ verified. The Jacobian column convention is `[base_lin(3), base_ang(3), joints(3
 
 **All tunables live in one header — [`src/config/WalkingConfig.h`](src/config/WalkingConfig.h)**:
 motor position-servo gains (`kServoKp/kServoKv` — raise for stiffer joint tracking),
-gait pattern (`kStepPeriod`, `kDoubleSupportRatio`, `kStepHeight`, stride/sway limits),
-preview (`kPreviewSec`, `kComHeight`, `Q`/`R`), WBIK task gains (`kpCom/kpSwing/...`)
-and DLS damping, and teleop velocity limits. Each module's defaults read from here;
+gait pattern (`kStepPeriod`, plus **separate `kStepPeriodStart`/`kStepPeriodEnd`** that
+make the first/last steps slower to soften the walk-start/stop ZMP transient,
+`kDoubleSupportRatio`, `kStepHeight`, stride/sway limits),
+preview (`kPreviewSec`, `kComHeight`, `Q`/`R`), CLIK task gains (`kpCom/kpSwing/...`
+= the closed-loop IK error gains) and DLS damping, and teleop velocity limits.
+Each module's defaults read from here;
 runtime overrides exist too (`SimIO::setServoGains`, `HumanoidController::setGains`/`setGaitParams`).
 
 The headless harness `test/headless_walk_test.cpp` reads env vars for quick sweeps:

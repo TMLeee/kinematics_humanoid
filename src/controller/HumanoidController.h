@@ -60,6 +60,15 @@ public:
 
     const std::string& statusText() const { return status_; }
 
+    // 그래프/디버그용 내부 신호(제어기가 매 tick 산출).
+    struct DebugSignals {
+        Eigen::Vector2d footstep = Eigen::Vector2d::Zero();  // 지지발(footstep) 중심 (x,y)
+        Eigen::Vector2d zmpRef   = Eigen::Vector2d::Zero();  // 목표 ZMP (footstep 생성기)
+        Eigen::Vector2d comRef   = Eigen::Vector2d::Zero();  // preview COM 목표
+        bool walking = false;
+    };
+    const DebugSignals& debug() const { return dbg_; }
+
 private:
     RobotModel* model_ = nullptr;
     double dt_ = 0.002;
@@ -101,6 +110,7 @@ private:
     bool haveComMeas_ = false;
 
     std::string status_;
+    DebugSignals dbg_;
 
     int footId(Side s) const { return s == Side::Left ? idLFoot_ : idRFoot_; }
     int handId(Side s) const { return s == Side::Left ? idLHand_ : idRHand_; }

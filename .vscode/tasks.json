@@ -4,41 +4,7 @@
         {
             "type": "shell",
             "label": "build (kin_humanoid)",
-            "command": "/usr/bin/g++",
-            "args": [
-                "-std=c++17",
-                "-fdiagnostics-color=always",
-                "-g",
-                "-O0",
-                "${workspaceFolder}/src/main.cpp",
-                "${workspaceFolder}/src/simulator/MujocoEnv.cpp",
-                "${workspaceFolder}/src/model/MujocoModel.cpp",
-                "${workspaceFolder}/src/model/RbdlModel.cpp",
-                "${workspaceFolder}/src/io/SimIO.cpp",
-                "${workspaceFolder}/src/io/RealIO.cpp",
-                "${workspaceFolder}/src/controller/FootstepGenerator.cpp",
-                "${workspaceFolder}/src/controller/WholeBodyIK.cpp",
-                "${workspaceFolder}/src/controller/HumanoidController.cpp",
-                "-o",
-                "${workspaceFolder}/main",
-                "-I${workspaceFolder}/src",
-                "-I/opt/mujoco/mujoco/include",
-                "-I/usr/include/eigen3",
-                "-I/usr/local/include",
-                "-L/opt/mujoco/mujoco/lib",
-                "-L/usr/local/lib",
-                "-Wl,-rpath,/opt/mujoco/mujoco/lib",
-                "-Wl,-rpath,/usr/local/lib",
-                "-lmujoco",
-                "-lglfw",
-                "-lGLEW",
-                "-lGL",
-                "-lrbdl",
-                "-lrbdl_urdfreader",
-                "-lm",
-                "-ldl",
-                "-lpthread"
-            ],
+            "command": "make -j$(nproc) main",
             "options": {
                 "cwd": "${workspaceFolder}"
             },
@@ -49,31 +15,15 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "프로젝트 전체 빌드 (src -> ./main), MuJoCo + GLFW + Eigen/RBDL 링크"
+            "detail": "프로젝트 전체 빌드 (src -> ./main). Makefile 사용, nproc 코어 수만큼 병렬 컴파일 + 증분 빌드"
         },
         {
             "type": "shell",
             "label": "build headless test",
-            "command": "/usr/bin/g++",
-            "args": [
-                "-std=c++17", "-O2",
-                "${workspaceFolder}/test/headless_walk_test.cpp",
-                "${workspaceFolder}/src/simulator/MujocoEnv.cpp",
-                "${workspaceFolder}/src/model/MujocoModel.cpp",
-                "${workspaceFolder}/src/io/SimIO.cpp",
-                "${workspaceFolder}/src/controller/FootstepGenerator.cpp",
-                "${workspaceFolder}/src/controller/WholeBodyIK.cpp",
-                "${workspaceFolder}/src/controller/HumanoidController.cpp",
-                "-o", "${workspaceFolder}/headless_test",
-                "-I${workspaceFolder}/src",
-                "-I/opt/mujoco/mujoco/include", "-I/usr/include/eigen3", "-I/usr/local/include",
-                "-L/opt/mujoco/mujoco/lib", "-L/usr/local/lib",
-                "-Wl,-rpath,/opt/mujoco/mujoco/lib", "-Wl,-rpath,/usr/local/lib",
-                "-lmujoco", "-lglfw", "-lGLEW", "-lGL", "-lm", "-ldl", "-lpthread"
-            ],
+            "command": "make -j$(nproc) headless_test",
             "options": { "cwd": "${workspaceFolder}" },
             "problemMatcher": ["$gcc"],
-            "detail": "뷰어 없는 헤드리스 보행 검증 하네스 (KIN_* 환경변수로 튜닝)"
+            "detail": "뷰어 없는 헤드리스 보행 검증 하네스 (KIN_* 환경변수로 튜닝). nproc 코어 병렬 빌드"
         }
     ]
 }

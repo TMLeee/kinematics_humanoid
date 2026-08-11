@@ -95,6 +95,8 @@ void FootstepGenerator::zmpAt(double t, double& zx, double& zy) const {
     const double Tds = p_.dsRatio * (plan_[i].t1 - plan_[i].t0);   // 구간별 양발지지 길이
     double local = t - plan_[i].t0;
     if (i > 0 && local < Tds) {   // 양발지지: 이전 지지발 -> 현재 지지발로 ZMP 이동
+        // 주의: 이전 지지발(=스윙발 방향)에서 출발하는 것이 맞다. 이렇게 해야 LIPM 에서
+        // ZMP 가 COM 반대쪽에 놓여 COM 을 지지발 위로 밀어주는 가속이 생긴다.
         double f = clampd(local / Tds, 0.0, 1.0);
         zx = plan_[i - 1].fx + (plan_[i].fx - plan_[i - 1].fx) * f;
         zy = plan_[i - 1].fy + (plan_[i].fy - plan_[i - 1].fy) * f;

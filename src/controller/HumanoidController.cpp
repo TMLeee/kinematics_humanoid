@@ -191,6 +191,19 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
         if (en_.pelvis) tasks.push_back({Jori, xdot, g_.lamPelvis, "PelvisOri"});
     }
 
+    // --- (5) 허리 자세(최하위 우선순위) : 허리축(Waist1/Waist2/Upperbody) 각 0 유지 ---
+    //   Cartesian 이 아니라 관절공간 posture task 이므로 selection Jacobian(3×nJoints)을
+    //   직접 만든다(축약 불필요). 최하위이므로 상위 task 의 null space 안에서만 작동한다.
+    {
+        MatrixXd J = MatrixXd::Zero(3, nJoints_);
+        J(0, Waist1) = 1.0; J(1, Waist2) = 1.0; J(2, Upperbody) = 1.0;
+        VectorXd xdot(3);
+        xdot << g_.kpWaist * (0.0 - jointsInt_(Waist1)),
+                g_.kpWaist * (0.0 - jointsInt_(Waist2)),
+                g_.kpWaist * (0.0 - jointsInt_(Upperbody));
+        if (en_.waist) tasks.push_back({J, xdot, g_.lamWaist, "Waist"});
+    }
+
     // 5) 우선순위 DLS → 관절 dq.
     VectorXd dq = WholeBodyIK::solve(tasks, nJoints_);
 

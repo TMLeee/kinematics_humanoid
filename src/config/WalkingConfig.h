@@ -19,7 +19,7 @@ inline constexpr double kControlDt = 0.002;      // 제어 주기 [s] (500 Hz)
 //   보행 시 관절이 목표 궤적을 못 따라가 넘어지면 kp 를 키워 추종 강성을 높인다.
 //   (SimIO 가 MuJoCo 액추에이터에 적용. 기존 ctrlrange 는 forcerange 로 이전되어
 //    실제 토크 포화는 유지됨.)
-inline constexpr double kServoKp = 10000.0;        // 위치 이득
+inline constexpr double kServoKp = 20000.0;        // 위치 이득
 inline constexpr double kServoKv = 500.0;         // 속도(감쇠) 이득
 
 // ── 보행 패턴(발걸음 생성) ───────────────────────────────────────────────────
@@ -51,10 +51,12 @@ inline constexpr double kPreviewR     = 1.0e-6;  // 입력(jerk) 가중
 //     dq = Σ pinv(J_i · N) (xdot_i - J_i · dq).
 //   (내부 피드포워드 모델 기준의 closed-loop — IK 적분 드리프트 방지/수렴 보장.
 //    실측 로봇에 대한 균형 피드백은 별도의 안정화기 몫이다.)
+//   우선순위: 고정발 > COM > 스윙발 > 손 > 골반자세 > 허리자세(최하위).
 inline constexpr double kpCom    = 6.0;
 inline constexpr double kpSwing  = 12.0;
 inline constexpr double kpHand   = 4.0;
 inline constexpr double kpPelvis = 3.0;
+inline constexpr double kpWaist  = 2.0;   // 허리축(관절 0 유지), 최하위 우선순위
 
 // ── WBIK DLS 감쇠 계수(lambda) ──────────────────────────────────────────────
 inline constexpr double kLamSupport = 1.0e-3;
@@ -62,6 +64,7 @@ inline constexpr double kLamCom     = 1.0e-3;
 inline constexpr double kLamSwing   = 1.0e-3;
 inline constexpr double kLamHand    = 1.0e-2;
 inline constexpr double kLamPelvis  = 1.0e-2;
+inline constexpr double kLamWaist   = 1.0e-2;
 
 // ── 텔레옵(키보드) 속도 한계/램프 ────────────────────────────────────────────
 inline constexpr double kVfwdMax  = 0.06;        // 전후 [m/s]

@@ -29,15 +29,17 @@ public:
         double kpSwing  = config::kpSwing;
         double kpHand   = config::kpHand;
         double kpPelvis = config::kpPelvis;
+        double kpWaist  = config::kpWaist;
         double lamSupport = config::kLamSupport;
         double lamCom     = config::kLamCom;
         double lamSwing   = config::kLamSwing;
         double lamHand    = config::kLamHand;
         double lamPelvis  = config::kLamPelvis;
+        double lamWaist   = config::kLamWaist;
     };
 
     // task on/off (튜닝/디버그용). 기본 전부 on.
-    struct Enable { bool com = true, swing = true, hand = true, pelvis = true; };
+    struct Enable { bool com = true, swing = true, hand = true, pelvis = true, waist = true; };
     void setEnable(const Enable& e) { en_ = e; }
 
     void init(RobotModel* model, double dt, const RobotState& s0);

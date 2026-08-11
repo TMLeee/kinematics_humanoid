@@ -31,6 +31,8 @@ int main(int argc, char** argv) {
     {   // 보행 파라미터(환경변수로 튜닝): KIN_TSTEP, KIN_DS, KIN_H
         kin::FootstepGenerator::Params gp;
         if (getenv("KIN_TSTEP")) gp.Tstep = atof(getenv("KIN_TSTEP"));
+        if (getenv("KIN_TSTART")) gp.TstepStart = atof(getenv("KIN_TSTART"));
+        if (getenv("KIN_TEND"))   gp.TstepEnd   = atof(getenv("KIN_TEND"));
         if (getenv("KIN_DS"))    gp.dsRatio = atof(getenv("KIN_DS"));
         if (getenv("KIN_H"))     gp.stepHeight = atof(getenv("KIN_H"));
         controller.setGaitParams(gp);
@@ -48,9 +50,10 @@ int main(int argc, char** argv) {
         kin::HumanoidController::Enable e;
         e.com = onoff("KIN_COM", true); e.swing = onoff("KIN_SWING", true);
         e.hand = onoff("KIN_HAND", true); e.pelvis = onoff("KIN_PELVIS", true);
+        e.waist = onoff("KIN_WAIST", true);
         controller.setEnable(e);
-        std::printf("tasks: com=%d swing=%d hand=%d pelvis=%d\n",
-                    e.com, e.swing, e.hand, e.pelvis);
+        std::printf("tasks: com=%d swing=%d hand=%d pelvis=%d waist=%d\n",
+                    e.com, e.swing, e.hand, e.pelvis, e.waist);
     }
 
     // 관절 한계
@@ -81,8 +84,21 @@ int main(int argc, char** argv) {
         for (int i = 0; i < qDes.size(); ++i)
             if (std::isnan(qDes(i)) || std::isinf(qDes(i))) { ok = false; }
         io.writeJointTargets(qDes);
+        // 신호 계측(그래프 오프셋 진단): ref(제어기) vs 측정(sim).
+        if (getenv("KIN_SIG") && k % (int)std::lround(0.2 / dt) == 0) {
+            const auto& d = controller.debug();
+            io.read(state);
+            Eigen::Vector2d cm = io.measuredCom();          // sim subtree_com (측정)
+            // 동일 측정 상태에서 모델(MujocoModel)이 계산한 COM.
+            model.setState(state.q, kin::VectorXd::Zero(model.nv()));
+            model.updateKinematics();
+            kin::Vector3d mc = model.com();
+            std::printf("SIG %s t=%.2f | simCOM=(%.4f,%.4f,%.4f) modelCOM=(%.4f,%.4f,%.4f) diff=(%.1e,%.1e)\n",
+                tag, k * dt, cm.x(), cm.y(), 0.0, mc.x(), mc.y(), mc.z(),
+                cm.x() - mc.x(), cm.y() - mc.y());
+        }
         io.step();
-        if (k % (int)std::lround(0.5 / dt) == 0) {
+        if (!getenv("KIN_SIG") && k % (int)std::lround(0.5 / dt) == 0) {
             std::printf("[%s t=%.2f] base=(%.3f,%.3f,%.3f) %s\n",
                         tag, k * dt, state.q(0), state.q(1), state.q(2),
                         controller.statusText().c_str());

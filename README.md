@@ -2,6 +2,9 @@
 
 MuJoCo-based **kinematic whole-body walking control** for the DYROS Tocabi v2 humanoid.
 
+This project is a restructuring of the kinematics-based humanoid control framework
+originally developed in 2019, rebuilt around MuJoCo.
+
 Keyboard-teleoperated walking built as a clean, swappable pipeline:
 
 ```
@@ -313,10 +316,12 @@ file is auto-created from safe defaults). Each module's values come from here;
 runtime overrides exist too (`SimIO::setServoGains`, `HumanoidController::setGains`/`setGaitParams`).
 
 The headless harness `test/headless_walk_test.cpp` reads env vars for quick sweeps:
-`KIN_KP`, `KIN_KV` (servo gains), `KIN_VX`, `KIN_VY`, `KIN_VYAW` (walk speed),
-`KIN_TSTEP`, `KIN_DS`, `KIN_H` (gait), `KIN_COMZ` (COM height),
-`KIN_STAB` (experimental stabilizer), `KIN_WALKSEC`, and
-`KIN_COM/SWING/HAND/PELVIS` (task on/off). Example:
+`KIN_KP`/`KIN_KV` (servo gains), `KIN_VX`/`KIN_VY`/`KIN_VYAW` (walk speed),
+`KIN_TSTEP`/`KIN_TSTART`/`KIN_DS`/`KIN_H` (gait), `KIN_COMZ` (COM height),
+`KIN_STAB` (experimental COM feedback — off by default; naive gains destabilize),
+`KIN_WALKSEC`, `KIN_COM/SWING/HAND/PELVIS` (task on/off), and diagnostics
+`KIN_JUMP`(+`KIN_JTHR`) — per-tick joint-command spikes with the culprit task —
+and `KIN_WSTART` — walk-start ZMP/COM/foot-height trace. Example:
 
 ```bash
 KIN_KP=8000 KIN_VX=0.04 KIN_WALKSEC=6 ./headless_test   # stiffer servo, forward walk

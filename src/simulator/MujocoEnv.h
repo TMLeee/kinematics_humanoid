@@ -77,6 +77,9 @@ public:
     // 실시간 보행 그래프. 매 tick 데이터를 push 하고, 'G' 키로 표시 토글.
     kin::WalkPlotter& walkPlotter() { return plotter_; }
 
+    // COM 목표(초록)/현재(빨강) 위치를 작은 구로 표시. 매 tick world 좌표를 넘긴다.
+    void setComMarkers(const double comRef[3], const double comCur[3]);
+
     mjModel* model() { return m_; }
     mjData*  data()  { return d_; }
 
@@ -109,6 +112,11 @@ private:
     // 실시간 보행 그래프
     kin::WalkPlotter plotter_;
     bool             show_plots_ = true;   // 기본 표시('G' 로 토글)
+
+    // COM 목표(초록)/현재(빨강) 마커 구. setComMarkers 로 갱신, render 에서 씬에 추가.
+    double com_ref_[3] = {0, 0, 0};
+    double com_cur_[3] = {0, 0, 0};
+    bool   markers_valid_ = false;
 
     // --- 좌상단 오버레이(실시간 배율/FPS/시뮬 시간) 통계 ---
     void drawOverlay(const mjrRect& viewport);

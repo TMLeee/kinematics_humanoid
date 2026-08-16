@@ -22,12 +22,14 @@
   "previewQe": 1.0,
   "previewR": 1.0,
   "comMassScale": 2.0,
+  "closedLoop": 0.0,
+  "footRefAnkle": 1.0,
 
   "kpCom": 6.0,
-  "kpSwing": 12.0,
-  "kpHand": 4.0,
-  "kpPelvis": 3.0,
-  "kpWaist": 2.0,
+  "kpSwing": 6.0,
+  "kpHand": 6.0,
+  "kpPelvis": 6.0,
+  "kpWaist": 6.0,
 
   "lamSupport": 1.0e-3,
   "lamCom": 1.0e-3,

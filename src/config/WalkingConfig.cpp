@@ -52,6 +52,9 @@ void assignAll(const std::string& s, WalkingConfig& c) {
     D("gravity", c.gravity);
     D("previewQe", c.previewQe);        D("previewR", c.previewR);
     D("comMassScale", c.comMassScale);
+    D("closedLoop", c.closedLoop);
+    D("footRefAnkle", c.footRefAnkle);
+    D("comMeasPlanted", c.comMeasPlanted);
     D("kpCom", c.kpCom);                D("kpSwing", c.kpSwing);
     D("kpHand", c.kpHand);              D("kpPelvis", c.kpPelvis);
     D("kpWaist", c.kpWaist);
@@ -96,7 +99,10 @@ bool saveToJson(const std::string& path) {
     f << "  \"gravity\": " << c.gravity << ",\n";
     f << "  \"previewQe\": " << c.previewQe << ",\n";
     f << "  \"previewR\": " << c.previewR << ",\n";
-    f << "  \"comMassScale\": " << c.comMassScale << ",\n\n";
+    f << "  \"comMassScale\": " << c.comMassScale << ",\n";
+    f << "  \"closedLoop\": " << c.closedLoop << ",\n";
+    f << "  \"footRefAnkle\": " << c.footRefAnkle << ",\n";
+    f << "  \"comMeasPlanted\": " << c.comMeasPlanted << ",\n\n";
     f << "  \"kpCom\": " << c.kpCom << ",\n";
     f << "  \"kpSwing\": " << c.kpSwing << ",\n";
     f << "  \"kpHand\": " << c.kpHand << ",\n";

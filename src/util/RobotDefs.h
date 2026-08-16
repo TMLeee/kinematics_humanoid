@@ -51,6 +51,11 @@ enum JointIdx {
 // 다리 관절 그룹의 시작 인덱스(6개 연속).
 constexpr int legJointStart(Side s) { return s == Side::Left ? L_HipYaw : R_HipYaw; }
 
+// 양팔 관절(각 8 DOF, 목/머리는 제외). 팔 자세 유지 task 의 대상.
+inline constexpr std::array<int, 16> kArmJoints = {
+    L_Shoulder1, L_Shoulder2, L_Shoulder3, L_Armlink, L_Elbow, L_Forearm, L_Wrist1, L_Wrist2,
+    R_Shoulder1, R_Shoulder2, R_Shoulder3, R_Armlink, R_Elbow, R_Forearm, R_Wrist1, R_Wrist2};
+
 // ---- 주요 바디 이름(MuJoCo body / RBDL body 공통 명명) ----
 struct BodyNames {
     static constexpr const char* Pelvis    = "base_link";

@@ -49,6 +49,22 @@ struct WalkingConfig {
     // ZMP 계산 시 COM 관성항(c̈om 계수) 배율. 1.0=이론(질량 소거), 1.3=계산상 30% 무겁게.
     //   계산 ZMP 와 실제 동작이 다를 때 보정용. C=[1,0,−comMassScale·zc/g].
     double comMassScale = 1.0;
+    // 폐루프 IK: 측정 관절각으로 기구학(COM/자코비안)을 풀어 "실제 COM 오차"를 보정한다.
+    //   1=on → 이득이 실제 거동에 반영됨. 단 naive COM 피드백은 에너지를
+    //   더해 불안정 → 안정하려면 DCM/캡처포인트 피드백 필요. 0=off(개루프, 현재 안정 default).
+    double closedLoop = 0.0;
+    // LIPM/ZMP·지지제약·스윙발 목표의 발 기준점.
+    //   1 = 발목(AnkleRoll 링크 원점) — 기준면이 지면 위 0.1585 m 로 올라가
+    //       LIPM 높이 zc 가 그만큼 줄고 ω=√(g/zc) 가 커진다.
+    //   0 = 발바닥(지면 z=0, 기존 방식).
+    double footRefAnkle = 1.0;
+    // COM task 의 오차 신호로 쓸 COM 을 무엇으로 볼 것인가.
+    //   1 = "지지발이 지면에 고정" 가정 + **측정 관절각** FK (실기에서도 성립하는 실측 COM).
+    //   0 = 내부 지령(jointsInt_) 기준 COM — 순수 개루프.
+    //   주의: 1 은 COM 위치 피드백을 그대로 닫는 것이라 LIPM 에 에너지를 더해 불안정해질 수
+    //   있다(실측: 전진 8 s 에서 dx +0.02 → −1.02 m). 안정화하려면 DCM/캡처포인트 형태로
+    //   바꿔야 한다. A/B 용으로 노브를 남겨 둔다.
+    double comMeasPlanted = 1.0;
 
     // CLIK task 비례 이득 (우선순위: 고정발>COM>스윙발>손>골반>허리)
     double kpCom    = 6.0;

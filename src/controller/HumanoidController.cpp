@@ -8,11 +8,6 @@ namespace kin {
 
 namespace {
 double yawOf(const Matrix3d& R) { return std::atan2(R(1, 0), R(0, 0)); }
-
-// 지정 열들을 0 으로(하체만 COM 제어 → 팔/목 열 제거).
-void zeroCols(MatrixXd& J, int c0, int c1) {
-    for (int c = c0; c <= c1 && c < J.cols(); ++c) J.col(c).setZero();
-}
 }  // namespace
 
 void HumanoidController::init(RobotModel* model, double dt, const RobotState& s0) {
@@ -79,35 +74,69 @@ void HumanoidController::startWBC(const RobotState& s) {
     model_->setState(qInt_, VectorXd::Zero(model_->nv()));
     model_->updateKinematics();
 
+    // 발 기준점(footRef): LIPM/ZMP/지지 제약이 공유하는 발 위의 점.
+    //   footRefAnkle=1 → AnkleRoll 링크 원점(발목).
+    //   footRefAnkle=0 → 발바닥(기존).
+    //   footRefZ_ = 발이 지면에 평평할 때 이 점의 world z. 발목이면 +0.1585.
+    footRefOffset_ = useAnkleRef() ? Vector3d::Zero() : Vector3d(0, 0, kSoleOffsetZ);
+    footRefZ_      = useAnkleRef() ? -kSoleOffsetZ : 0.0;
+
     Vector3d com = model_->com();
     comRefZ_ = (comHeightOverride_ > 0.0) ? comHeightOverride_ : com.z();
+    // LIPM 높이 zc = 기준면 위 COM 높이. 기준이 발목이면 발목 높이를 뺀다.
+    //   (zc 가 바뀌면 ω=√(g/zc) 와 preview 게인이 함께 바뀐다 — 의도된 변경.)
+    comLipmZ_ = std::max(0.05, comRefZ_ - footRefZ_);
 
-    Vector3d lf = model_->bodyPos(idLFoot_, soleOffset_);
-    Vector3d rf = model_->bodyPos(idRFoot_, soleOffset_);
+    Vector3d lf = model_->bodyPos(idLFoot_, footRefOffset_);
+    Vector3d rf = model_->bodyPos(idRFoot_, footRefOffset_);
     Pose2 left{lf.x(), lf.y(), yawOf(model_->bodyRot(idLFoot_))};
     Pose2 right{rf.x(), rf.y(), yawOf(model_->bodyRot(idRFoot_))};
-    footstep_.init(left, right, comRefZ_, gait_);
+    footstep_.init(left, right, comLipmZ_, gait_);
 
-    preview_.init(dt_, comRefZ_, config::gConfig.previewSec, config::gConfig.gravity,
+    preview_.init(dt_, comLipmZ_, config::gConfig.previewSec, config::gConfig.gravity,
                   config::gConfig.previewQe, config::gConfig.previewR,
                   config::gConfig.comMassScale);
     preview_.reset(Eigen::Vector2d(com.x(), com.y()));
 
-    Matrix3d Rp = model_->bodyRot(idPelvis_);
-    Vector3d pp = model_->bodyPos(idPelvis_);
-    for (int i = 0; i < 2; ++i) {
-        int hId = (i == 0) ? idLHand_ : idRHand_;
-        Matrix3d Rh = model_->bodyRot(hId);
-        Vector3d ph = model_->bodyPos(hId);
-        handRrel_[i] = Rp.transpose() * Rh;
-        handPrel_[i] = Rp.transpose() * (ph - pp);
-    }
+    std::printf("[HumanoidController] footRef=%s  footRefZ=%.4f  comZ(world)=%.4f  "
+                "zc(LIPM)=%.4f  omega=%.3f\n",
+                useAnkleRef() ? "ANKLE" : "SOLE", footRefZ_, comRefZ_, comLipmZ_,
+                std::sqrt(config::gConfig.gravity / comLipmZ_));
+
+    // 양팔 유지 목표 = 현재(보행 준비) 자세의 팔 관절각.
+    armHold_ = jointsInt_;
 
     prevSwing_ = footstep_.swingFootTarget();
+    haveSwingSide_ = false;   // 첫 Active tick 에서 prevSwing_ 을 현재 목표로 재설정
     prevWalking_ = false;
     walkEnabled_ = false;
     haveComMeas_ = false;
     first_ = true;
+}
+
+// 지지발 기준점을 계획 포즈(평지, yaw 만)에 고정한 채 관절각으로 base 를 역산하고 COM 을 푼다.
+Vector3d HumanoidController::comWithPlantedFoot(const VectorXd& qJoints, int supId) {
+    const Pose2 sp = footstep_.supportFootPose();
+    const Matrix3d R_pl = rotZ(sp.yaw);
+    const Vector3d p_pl(sp.x, sp.y, footRefZ_);
+
+    // 1) base = 단위 로 두고 지지발 기준점의 base-상대 포즈를 얻는다.
+    qInt_.head(3).setZero(); qInt_(3) = 1; qInt_(4) = 0; qInt_(5) = 0; qInt_(6) = 0;
+    qInt_.segment(kBaseQ, nJoints_) = qJoints;
+    model_->setState(qInt_, VectorXd::Zero(model_->nv()));
+    model_->updateKinematics();
+    const Vector3d p_bf = model_->bodyPos(supId, footRefOffset_);
+    const Matrix3d R_bf = model_->bodyRot(supId);
+
+    // 2) foot_world = base ⊕ foot_base 를 만족하는 base 로 다시 세팅 후 COM.
+    const Matrix3d R_base = R_pl * R_bf.transpose();
+    const Vector3d p_base = p_pl - R_base * p_bf;
+    const Quaterniond qb = Quaterniond(R_base).normalized();
+    qInt_.head(3) = p_base;
+    qInt_(3) = qb.w(); qInt_(4) = qb.x(); qInt_(5) = qb.y(); qInt_(6) = qb.z();
+    model_->setState(qInt_, VectorXd::Zero(model_->nv()));
+    model_->updateKinematics();
+    return model_->com();
 }
 
 VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& cmd) {
@@ -149,78 +178,126 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     VelocityCommand fcmd = cmd;
     fcmd.walk = walkEnabled_;
 
-    // 0) (안정화 사용 시) 측정 상태에서 실제 COM 을 먼저 구한다.
-    Eigen::Vector2d comMeas(0, 0), comVelMeas(0, 0);
-    bool useStab = (stabAlpha_ > 0.0) && s.valid && (s.q.size() == model_->nq());
-    if (useStab) {
-        model_->setState(s.q, VectorXd::Zero(model_->nv()));
+    // 0) 계산 기준(qBasis): 내부 지령 jointsInt_ 과 측정 관절각을 stabAlpha(γ)로 섞는다.
+    //    γ=0 → 순수 개루프(내부), γ=1 → 완전 폐루프(측정). fixed-foot 로 base 를 역산하므로
+    //    측정을 섞어도 드리프트가 없다. 지령은 항상 내부 적분(jointsInt_)으로 부드럽게 유지.
+    VectorXd qMeas = (s.valid && s.q.size() == model_->nq())
+                     ? s.q.segment(kBaseQ, nJoints_) : jointsInt_;
+    // 폐루프: 측정 관절각으로 기구학을 풀어 "실제 COM/발 오차"를 보정한다.
+    //   개루프(closedLoop=0)면 내부 지령 jointsInt_ 기준(+ 선택적 γ 블렌드).
+    bool closedLoop = (config::gConfig.closedLoop > 0.5) && s.valid
+                      && s.q.size() == model_->nq();
+    double gamma = stabAlpha_;
+    VectorXd qBasis = closedLoop ? qMeas
+                    : (gamma <= 0.0) ? jointsInt_
+                    : ((1.0 - gamma) * jointsInt_ + gamma * qMeas);
+
+    // 1) 발걸음 생성기(지지발/스윙 결정 — 모델 상태 불필요).
+    footstep_.update(dt_, fcmd);
+    Side sup = footstep_.supportSide();
+    Side sw  = footstep_.swingSide();
+    int supId = footId(sup), swId = footId(sw);
+
+    // 2) 고정발(fixed-foot) 재앵커링:
+    //    base 를 적분하지 않고, 매 tick "지지발 발바닥을 계획 포즈에 고정"하도록 관절각으로부터
+    //    FK 로 역산한다. 이렇게 하면 내부 모델이 정확히 "지지발이 지면에 고정된 매니퓰레이터"가
+    //    되어(지지발이 루트) 적분 2차 드리프트가 사라진다.
+    {
+        Pose2 sp = footstep_.supportFootPose();
+        Vector3d p_pl(sp.x, sp.y, footRefZ_);      // 지지발 기준점(발목이면 z=+0.1585)
+        Matrix3d R_pl = rotZ(sp.yaw);
+        // base=단위 로 두고 지지발 기준점의 base-상대 포즈를 구한다.
+        qInt_.head(3).setZero(); qInt_(3) = 1; qInt_(4) = 0; qInt_(5) = 0; qInt_(6) = 0;
+        qInt_.segment(kBaseQ, nJoints_) = qBasis;
+        model_->setState(qInt_, VectorXd::Zero(model_->nv()));
         model_->updateKinematics();
-        Vector3d cm = model_->com();
-        comMeas = Eigen::Vector2d(cm.x(), cm.y());
-        if (haveComMeas_) comVelMeas = (comMeas - prevComMeas_) / dt_;
-        prevComMeas_ = comMeas;
-        haveComMeas_ = true;
+        Vector3d p_bf = model_->bodyPos(supId, footRefOffset_);   // 기준점(base 프레임)
+        Matrix3d R_bf = model_->bodyRot(supId);
+        // foot_world = base ⊕ foot_base = (p_pl, R_pl) 를 만족하는 base:
+        Matrix3d R_base = R_pl * R_bf.transpose();
+        Vector3d p_base = p_pl - R_base * p_bf;
+        basePos_  = p_base;
+        baseQuat_ = Quaterniond(R_base).normalized();
     }
 
-    // 1) 모델을 내부(피드포워드) 상태로 세팅.
-    //    지지발을 정확히 고정한 일관된 전신 궤적을 내부에서 만들고, 관절만 지령한다.
+    // 2-b) COM "측정값": 지지발이 지면에 고정되어 있다는 가정 하에 **측정 관절각**으로 푼다.
+    //    floating-base 추정(sim 의 자유베이스 / 실기의 상태추정)에 의존하지 않으므로 실제
+    //    로봇에서도 그대로 성립한다. 이 값만 COM task 의 오차 신호로 쓰고, 나머지 태스크와
+    //    자코비안은 아래 3) 의 내부 기준(qBasis)을 그대로 유지한다 — dq 의 선형화점과
+    //    적분점을 어긋나게 하지 않기 위해서다(closedLoop=1 로 전체를 바꾸면 그 불일치가 생긴다).
+    //    주의: 이 호출은 내부 모델 상태를 덮어쓰므로 반드시 3) 이전에 한다.
+    //    그래프/뷰어 마커의 "현재 COM" 도 이 값을 쓰므로, comMeasPlanted 노브와 무관하게
+    //    측정이 유효하면 항상 계산한다(노브는 "COM task 오차에 쓸지"만 정한다).
+    const bool measOk = s.valid && s.q.size() == model_->nq();
+    Vector3d comMeas = measOk ? comWithPlantedFoot(qMeas, supId) : Vector3d::Zero();
+    const bool haveMeas = measOk && (config::gConfig.comMeasPlanted > 0.5);
+
+    // 3) 내부 모델을 (재앵커된 base, 계산 기준 관절각) 로 세팅 → 발/자코비안 기준.
     qInt_.head(3) = basePos_;
     qInt_(3) = baseQuat_.w(); qInt_(4) = baseQuat_.x();
     qInt_(5) = baseQuat_.y(); qInt_(6) = baseQuat_.z();
-    qInt_.segment(kBaseQ, nJoints_) = jointsInt_;
+    qInt_.segment(kBaseQ, nJoints_) = qBasis;
     model_->setState(qInt_, VectorXd::Zero(model_->nv()));
     model_->updateKinematics();
-    Vector3d com = model_->com();
+    // COM task 오차용 COM: 측정이 있으면 "지지발 지면고정 + 측정 관절각" 값을 쓴다.
+    Vector3d com = haveMeas ? comMeas : model_->com();
 
-    // 2) 발걸음 생성기.
-    footstep_.update(dt_, fcmd);
     if (footstep_.walking() != prevWalking_)
         preview_.reset(Eigen::Vector2d(com.x(), com.y()));   // 상태 전환 시 점프 방지
     prevWalking_ = footstep_.walking();
 
-    // 지지발이 교체되는 tick 에는 스윙발 목표가 반대발로 불연속 점프하므로,
-    // 스윙 피드포워드가 거대한 스파이크를 만들지 않도록 prevSwing_ 을 현재 목표로 맞춘다.
-    if (footstep_.supportJustSwitched())
-        prevSwing_ = footstep_.swingFootTarget();
-
-    // 3) preview: 앞으로 1초 ZMP 윈도우 → COM 레퍼런스.
+    // 4) preview: 앞으로 1초 ZMP 윈도우 → COM 레퍼런스(순수 feedforward).
     int N = preview_.previewSize();
     std::vector<double> zx, zy;
     footstep_.zmpPreview(zx, zy, N, dt_);
-    if (useStab) preview_.updateWithFeedback(zx, zy, comMeas, comVelMeas, stabAlpha_);
-    else         preview_.update(zx, zy);
+    preview_.update(zx, zy);
     Eigen::Vector2d comRef = preview_.comPos();
     Eigen::Vector2d comVel = preview_.comVel();
     Vector3d comRefW(comRef(0), comRef(1), comRefZ_);
 
-    // 4) 지지발 제약(최상위) → 베이스 종속 사상 S.
-    Side sup = footstep_.supportSide();
-    Side sw  = footstep_.swingSide();
-    int supId = footId(sup), swId = footId(sw);
-    MatrixXd Jsup = model_->bodyJacobian(supId, soleOffset_);   // 6×nv
+    // 5) 지지발 제약(최상위) → 베이스 종속 사상 S.
+    MatrixXd Jsup = model_->bodyJacobian(supId, footRefOffset_);   // 6×nv
     MatrixXd S = WholeBodyIK::baseSlave(Jsup, nJoints_, g_.lamSupport);
 
     std::vector<WholeBodyIK::Task> tasks;
 
-    // --- (1) COM : 하체(다리+허리)로만 제어 ---
+    // --- (1) COM : 전신 support-consistent 자코비안을 그대로 사용 ---
     {
+        // [주의] 여기서 열을 0 으로 만들면 안 된다.
+        //   예전에는 팔/목(15..32)과 스윙 다리 6열을 zeroCols 로 지웠으나, 그것은
+        //   "이 관절들은 COM 을 움직이지 않는다"는 거짓 모델이라 두 가지가 함께 깨진다.
+        //     (1) 스윙발/손 태스크가 바로 그 관절들을 크게 움직이는데(스윙 다리 + 양팔),
+        //         COM 태스크는 그 기여를 모른 채 xdot 을 명령한다 → 미보상 외란.
+        //     (2) WholeBodyIK::solve 의 null-space 투영자 N 이 "지워진" Jc 로 만들어져,
+        //         하위 태스크가 COM 을 흔드는 것을 전혀 막지 못한다.
+        //   유한차분 검증: reduce(comJacobian(), S) 는 재앵커링 사상의 참 미분과
+        //   상대잔차 ~1e-10 으로 일치한다. 즉 자코비안 자체는 정확하고, 문제는 마스킹이었다.
+        //   팔을 균형에 쓰지 않게 하려면 열을 지우지 말고 pseudo-inverse 에 관절 가중을
+        //   주어야 한다(자코비안은 진실을 유지한 채 사용 관절만 제한).
         MatrixXd Jc = WholeBodyIK::reduce(model_->comJacobian(), S);  // 3×nJoints
-        zeroCols(Jc, L_Shoulder1, R_Wrist2);   // 팔+목 열 제거 (15..32)
+        // closedLoop=on 이면 com 은 측정 관절각 기준(실측 COM) → e 가 곧 실제 COM 오차.
         Vector3d e = comRefW - com;
         VectorXd xdot(3);
         xdot << comVel(0) + g_.kpCom * e(0),
                 comVel(1) + g_.kpCom * e(1),
                 g_.kpCom * e(2);
+        dbg_.errCom = e.norm(); dbg_.xdotCom = xdot.norm();
         if (en_.com) tasks.push_back({Jc, xdot, g_.lamCom, "COM"});
     }
 
     // --- (2) 스윙발 : cycloid 목표 추종(피드포워드 + P) ---
     {
         FootPose t = footstep_.swingFootTarget();
-        MatrixXd Jr = WholeBodyIK::reduce(model_->bodyJacobian(swId, soleOffset_), S);
-        Vector3d pcur = model_->bodyPos(swId, soleOffset_);
+        // 스윙발 정체성(side)이 바뀌면(예: WBC 시작 tick, Stand↔walk, 지지 교체)
+        // 목표가 반대발로 불연속 점프하므로 prevSwing_ 을 현재 목표로 맞춰 FF 스파이크를 없앤다.
+        if (!haveSwingSide_ || sw != prevSwingSide_) { prevSwing_ = t; haveSwingSide_ = true; }
+        prevSwingSide_ = sw;
+
+        MatrixXd Jr = WholeBodyIK::reduce(model_->bodyJacobian(swId, footRefOffset_), S);
+        Vector3d pcur = model_->bodyPos(swId, footRefOffset_);
         Matrix3d Rcur = model_->bodyRot(swId);
-        Vector3d pdes(t.x, t.y, t.z);
+        // footstep 의 swing z 는 "지면 위 높이"(0..stepHeight) → 기준점 높이를 더해 world z.
+        Vector3d pdes(t.x, t.y, footRefZ_ + t.z);
         Matrix3d Rdes = rotZ(t.yaw);
         Vector3d ffPos((t.x - prevSwing_.x) / dt_, (t.y - prevSwing_.y) / dt_,
                        (t.z - prevSwing_.z) / dt_);
@@ -228,26 +305,28 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
         VectorXd xdot(6);
         xdot.head(3) = ffPos + g_.kpSwing * (pdes - pcur);
         xdot.tail(3) = ffOri + g_.kpSwing * orientationError(Rdes, Rcur);
+        dbg_.errSwing = (pdes - pcur).norm(); dbg_.xdotSwing = xdot.norm();
         if (en_.swing) tasks.push_back({Jr, xdot, g_.lamSwing, "Swing"});
         prevSwing_ = t;
     }
 
-    // --- (3) 손 : 골반 프레임에 고정(자연스러운 팔 유지) ---
+    // --- (3) 양팔 : 초기(보행 준비) 자세의 관절각 유지 — 골반 자세보다 상위 우선순위 ---
+    //   Cartesian 손 태스크(골반 프레임 고정) 대신 관절공간 posture 로 잡는다.
+    //   - 손을 골반에 고정하면 허리가 움직일 때 팔이 그것을 보상하려 계속 흔들리는데,
+    //     관절각 유지는 팔을 말 그대로 가만히 둔다(COM 교란이 작고 예측 가능).
+    //   - Cartesian 이 아니므로 축약 불필요: selection Jacobian 을 직접 만든다.
+    //   - 이 태스크가 골반 자세(4)보다 앞에 있으므로, 골반은 팔의 null space 안에서만 움직인다.
     {
-        Matrix3d Rp = model_->bodyRot(idPelvis_);
-        Vector3d pp = model_->bodyPos(idPelvis_);
-        for (int i = 0; i < 2; ++i) {
-            int hId = (i == 0) ? idLHand_ : idRHand_;
-            MatrixXd Jr = WholeBodyIK::reduce(model_->bodyJacobian(hId), S);
-            Matrix3d Rdes = Rp * handRrel_[i];
-            Vector3d pdes = pp + Rp * handPrel_[i];
-            Vector3d pcur = model_->bodyPos(hId);
-            Matrix3d Rcur = model_->bodyRot(hId);
-            VectorXd xdot(6);
-            xdot.head(3) = g_.kpHand * (pdes - pcur);
-            xdot.tail(3) = g_.kpHand * orientationError(Rdes, Rcur);
-            if (en_.hand) tasks.push_back({Jr, xdot, g_.lamHand, "Hand"});
+        const int nArm = static_cast<int>(kArmJoints.size());
+        MatrixXd J = MatrixXd::Zero(nArm, nJoints_);
+        VectorXd xdot(nArm);
+        for (int k = 0; k < nArm; ++k) {
+            const int j = kArmJoints[k];
+            J(k, j) = 1.0;
+            xdot(k) = g_.kpHand * (armHold_(j) - qBasis(j));
         }
+        dbg_.xdotHand = xdot.norm();
+        if (en_.hand) tasks.push_back({J, xdot, g_.lamHand, "Arms"});
     }
 
     // --- (4) 골반 자세 : 수평 유지 + 진행방향 yaw ---
@@ -256,7 +335,9 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
         Matrix3d Rpel = model_->bodyRot(idPelvis_);
         MatrixXd Jr = WholeBodyIK::reduce(model_->bodyJacobian(idPelvis_), S);
         MatrixXd Jori = Jr.bottomRows(3);   // angular
-        VectorXd xdot = g_.kpPelvis * orientationError(rotZ(headingYaw), Rpel);
+        Vector3d oErr = orientationError(rotZ(headingYaw), Rpel);
+        VectorXd xdot = g_.kpPelvis * oErr;
+        dbg_.errPelvis = oErr.norm(); dbg_.xdotPelvis = xdot.norm();
         if (en_.pelvis) tasks.push_back({Jori, xdot, g_.lamPelvis, "PelvisOri"});
     }
 
@@ -267,27 +348,29 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
         MatrixXd J = MatrixXd::Zero(3, nJoints_);
         J(0, Waist1) = 1.0; J(1, Waist2) = 1.0; J(2, Upperbody) = 1.0;
         VectorXd xdot(3);
-        xdot << g_.kpWaist * (0.0 - jointsInt_(Waist1)),
-                g_.kpWaist * (0.0 - jointsInt_(Waist2)),
-                g_.kpWaist * (0.0 - jointsInt_(Upperbody));
+        xdot << g_.kpWaist * (0.0 - qBasis(Waist1)),
+                g_.kpWaist * (0.0 - qBasis(Waist2)),
+                g_.kpWaist * (0.0 - qBasis(Upperbody));
+        dbg_.xdotWaist = xdot.norm();
         if (en_.waist) tasks.push_back({J, xdot, g_.lamWaist, "Waist"});
     }
 
     // 5) 우선순위 DLS → 관절 dq.
     VectorXd dq = WholeBodyIK::solve(tasks, nJoints_);
-
-    // 6) 내부 모델 적분: 관절은 dq, base 는 지지발 고정 제약(v_base = S dq).
-    //    지지발이 내부 모델에서 정확히 고정되므로 키네마틱 드리프트가 없다.
-    // MuJoCo free-joint qvel 규약: 선속도는 world, 각속도는 base-local 프레임.
-    // 따라서 위치는 world 로 적분(좌표 그대로), 자세는 local 각속도 → 우곱으로 적분.
-    VectorXd vbase = S * dq;                  // 6: [lin(world,3), ang(local,3)]
-    basePos_ += vbase.head(3) * dt_;
-    Vector3d omega = vbase.tail(3) * dt_;     // base-local 각속도 * dt
-    double ang = omega.norm();
-    if (ang > 1e-12) {
-        Quaterniond dQ(Eigen::AngleAxisd(ang, omega / ang));
-        baseQuat_ = (baseQuat_ * dQ).normalized();   // local 프레임 → 우곱
+    // 점프 진단: 최대 |dq_i| 와 그 관절, 이 tick 관절 지령 변화량.
+    {
+        dbg_.dqMax = 0.0; dbg_.dqMaxJoint = -1;
+        for (int i = 0; i < nJoints_; ++i)
+            if (std::fabs(dq(i)) > dbg_.dqMax) { dbg_.dqMax = std::fabs(dq(i)); dbg_.dqMaxJoint = i; }
+        dbg_.qStep = dbg_.dqMax * dt_;
+        dbg_.supportSide = (sup == Side::Left) ? 0 : 1;
+        dbg_.supportSwitched = footstep_.supportJustSwitched();
     }
+
+    // 6) 지령 적분: jointsInt_ += dq*dt (항상 누적 — 위치서보가 지령을 앞세워 로봇을 끌게).
+    //    폐루프는 "오차"만 측정 기준(qBasis=qMeas)으로 닫는다(위 COM/발 태스크). 지령을
+    //    측정에서 매번 리셋하면 위치서보 힘이 안 실려 로봇이 못 움직인다.
+    //    base 는 다음 tick 에 지지발 고정 조건으로부터 FK 로 재계산 → 드리프트 없음.
     jointsInt_ += dq * dt_;
 
     // 관절 한계 클램프(설정된 경우).
@@ -313,7 +396,14 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
         dbg_.footstep = Eigen::Vector2d(sp.x, sp.y);
         dbg_.zmpRef   = Eigen::Vector2d(zx, zy);
         dbg_.comRef   = comRef;
+        dbg_.comMeas      = measOk ? comMeas : model_->com();
+        dbg_.comMeasValid = measOk;
+        dbg_.zmpFromCom = preview_.zmp();   // LIPM: COM ref 로부터의 ZMP(=C·x)
+        dbg_.comRefZ  = comRefZ_;
         dbg_.walking  = footstep_.walking();
+        dbg_.swingZ   = footstep_.swingFootTarget().z;
+        dbg_.phase    = footstep_.phase() == GaitPhase::SingleSupport ? 2
+                      : footstep_.phase() == GaitPhase::DoubleSupport ? 1 : 0;
     }
 
     first_ = false;

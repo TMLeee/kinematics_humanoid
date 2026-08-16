@@ -20,8 +20,12 @@ namespace kin {
 class PreviewController {
 public:
     // dt: 제어주기, comHeight: COM 높이 Zc, previewSec: 미리보기 창 길이(기본 1초).
+    //   comMassScale: ZMP 관계식(zmp = com − (zc/g)·c̈om)의 관성항(c̈om 계수) 배율.
+    //     LIPM 점질량 ZMP 식에서 질량은 소거되므로, "com 무게 N배"는 관성 반력을 N배로
+    //     보는 것과 같다 → C=[1,0,−comMassScale·zc/g]. 1.0=이론값, >1=계산상 더 무겁게.
     void init(double dt, double comHeight, double previewSec = 1.0,
-              double g = 9.81, double Qe = 1.0, double R = 1.0e-6) {
+              double g = 9.81, double Qe = 1.0, double R = 1.0e-6,
+              double comMassScale = 1.0) {
         dt_ = dt; zc_ = comHeight; g_ = g;
         N_ = std::max(1, (int)std::lround(previewSec / dt));
 
@@ -30,7 +34,7 @@ public:
               0, 1,  dt,
               0, 0,  1;
         B_ << dt * dt * dt / 6.0, dt * dt / 2.0, dt;
-        C_ << 1.0, 0.0, -zc_ / g_;
+        C_ << 1.0, 0.0, -comMassScale * zc_ / g_;
 
         // ZMP-오차 적분을 포함한 확장 시스템(4상태).
         Eigen::Matrix4d Atil = Eigen::Matrix4d::Zero();

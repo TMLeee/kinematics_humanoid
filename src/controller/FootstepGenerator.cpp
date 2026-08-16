@@ -8,6 +8,8 @@ namespace kin {
 namespace {
 constexpr double kPreviewHorizon = 1.2;   // 계획 확장 여유(>1초 preview 윈도우)
 double clampd(double v, double lo, double hi) { return std::max(lo, std::min(hi, v)); }
+// 부드러운 0→1 보간(경계 속도 0). ZMP shift 를 부드럽게.
+double smoothstep01(double x) { x = clampd(x, 0.0, 1.0); return x * x * (3.0 - 2.0 * x); }
 }  // namespace
 
 void FootstepGenerator::init(const Pose2& leftFoot, const Pose2& rightFoot,
@@ -26,14 +28,8 @@ void FootstepGenerator::init(const Pose2& leftFoot, const Pose2& rightFoot,
     prev_cur_ = -1;
 }
 
-// 스텝 인덱스(1 = 첫 스텝)별 주기. 시작은 TstepStart → startRamp 스텝에 걸쳐 Tstep 로,
-// 정지 요청 후(stopping_)에는 TstepEnd 로. ZMP 변화율을 시작/끝에서 낮춘다.
-double FootstepGenerator::stepPeriod(int stepIdx) const {
-    if (stopping_) return p_.TstepEnd;
-    if (stepIdx >= 1 && stepIdx <= p_.startRamp && p_.startRamp > 0) {
-        double f = static_cast<double>(stepIdx - 1) / p_.startRamp;   // 0 .. (ramp-1)/ramp
-        return p_.TstepStart + (p_.Tstep - p_.TstepStart) * f;
-    }
+// 모든 스텝은 동일 주기 Tstep. (초기/종료의 느린 체중이동은 별도 ZMP shift 페이즈가 담당.)
+double FootstepGenerator::stepPeriod(int /*stepIdx*/) const {
     return p_.Tstep;
 }
 
@@ -85,25 +81,35 @@ void FootstepGenerator::regenerateTail() {
     extendPlan();
 }
 
+// ZMP 레퍼런스. 첫 주기(초기 shift)·마지막 주기(종료 shift)만 천천히(smoothstep) 이동하고,
+// 중간 스테핑 구간은 보간 없이 현재 지지발에 고정한다(계단형 ZMP).
+//   지지 교체 경계를 중심으로 앞뒤 반쪽 DS 가 이어져 길이 Tds 의 연속 양발지지 구간이
+//   만들어지므로, 그 안에서 ZMP 가 한 발 → 다른 발로 계단 형태로 건너뛰어도 항상
+//   지지 다각형 안에 있다. preview controller 는 계단형 ZMP 입력을 전제로 설계된 것이라
+//   이 불연속을 미리보기로 흡수한다.
 void FootstepGenerator::zmpAt(double t, double& zx, double& zy) const {
+    // 종료 ZMP shift(마지막 주기): 지지발 → 양발중앙 (T_end_ 동안 천천히).
+    if (final_shift_) {
+        double f = smoothstep01((t - final_t0_) / std::max(1e-6, T_end_));
+        zx = fshift_from_x_ + (fshift_to_x_ - fshift_from_x_) * f;
+        zy = fshift_from_y_ + (fshift_to_y_ - fshift_from_y_) * f;
+        return;
+    }
+    // 초기 ZMP shift(첫 주기): 양발중앙 → 첫 지지발 (T_start_ 동안 천천히).
+    if (t < T_start_) {
+        double f = smoothstep01(T_start_ > 1e-6 ? t / T_start_ : 1.0);
+        zx = center_x_ + (sshift_to_x_ - center_x_) * f;
+        zy = center_y_ + (sshift_to_y_ - center_y_) * f;
+        return;
+    }
+    // 중간 스테핑: 보간 없이 현재 지지발에 고정.
     if (plan_.empty()) { zx = support_pose_.x; zy = support_pose_.y; return; }
     int i = (int)plan_.size() - 1;
     if (t < plan_.front().t0) i = 0;
     else for (int k = 0; k < (int)plan_.size(); ++k)
         if (t >= plan_[k].t0 && t < plan_[k].t1) { i = k; break; }
-
-    const double Tds = p_.dsRatio * (plan_[i].t1 - plan_[i].t0);   // 구간별 양발지지 길이
-    double local = t - plan_[i].t0;
-    if (i > 0 && local < Tds) {   // 양발지지: 이전 지지발 -> 현재 지지발로 ZMP 이동
-        // 주의: 이전 지지발(=스윙발 방향)에서 출발하는 것이 맞다. 이렇게 해야 LIPM 에서
-        // ZMP 가 COM 반대쪽에 놓여 COM 을 지지발 위로 밀어주는 가속이 생긴다.
-        double f = clampd(local / Tds, 0.0, 1.0);
-        zx = plan_[i - 1].fx + (plan_[i].fx - plan_[i - 1].fx) * f;
-        zy = plan_[i - 1].fy + (plan_[i].fy - plan_[i - 1].fy) * f;
-    } else {
-        zx = plan_[i].fx;
-        zy = plan_[i].fy;
-    }
+    zx = plan_[i].fx;
+    zy = plan_[i].fy;
 }
 
 void FootstepGenerator::update(double dt, const VelocityCommand& cmd) {
@@ -113,14 +119,18 @@ void FootstepGenerator::update(double dt, const VelocityCommand& cmd) {
     if (cmd.walk && !walking_) {
         walking_ = true;
         stopping_ = false;
-        step_count_ = 1;         // plan_[1] = 첫 스텝(step 1) → stepPeriod(1)=TstepStart
+        final_shift_ = false;
+        step_count_ = 1;
         cmd_ = cmd;
         t_ = 0.0;
         plan_.clear();
-        double T1 = stepPeriod(1);
+        T_start_ = std::max(0.0, p_.TstepStart);   // 초기 체중이동 시간
+        T_end_   = std::max(0.0, p_.TstepEnd);      // 종료 체중이동 시간
+
         // 첫 스윙발: 게걸음 방향에 맞춰 선택(발 교차 방지).
         Side firstSwing = (cmd.vy < -1e-4) ? Side::Right : Side::Left;
         Side firstStance = other(firstSwing);
+        first_stance_ = firstStance;
 
         // 초기 토르소 앵커 = 양발 중점.
         anchor_tx_ = 0.5 * (left_foot_.x + right_foot_.x);
@@ -128,26 +138,32 @@ void FootstepGenerator::update(double dt, const VelocityCommand& cmd) {
         anchor_tyaw_ = 0.5 * (left_foot_.yaw + right_foot_.yaw);
 
         auto footOf = [&](Side s) { return s == Side::Left ? left_foot_ : right_foot_; };
-        // plan_[0]: 첫 스윙발의 현재 포즈(swing-from), [-Tstep, 0]
+        // 초기 ZMP shift: 양발 중앙 → 첫 지지발.
+        center_x_ = anchor_tx_; center_y_ = anchor_ty_;
+        { Pose2 fs = footOf(firstStance); sshift_to_x_ = fs.x; sshift_to_y_ = fs.y; }
+
+        // 스테핑 계획은 t = T_start_ 부터 시작(초기 shift 이후).
+        // plan_[0]: 첫 스윙발의 현재 포즈(swing-from) — 시드(첫 스텝 ZMP 램프 없음)
         {
             Support sp; sp.side = firstSwing;
             Pose2 f = footOf(firstSwing);
             sp.fx = f.x; sp.fy = f.y; sp.fyaw = f.yaw;
             sp.tx = anchor_tx_; sp.ty = anchor_ty_; sp.tyaw = anchor_tyaw_;
-            sp.t0 = -p_.Tstep; sp.t1 = 0.0;
+            sp.t0 = T_start_ - p_.Tstep; sp.t1 = T_start_;
+            sp.seed = true;
             plan_.push_back(sp);
         }
-        // plan_[1]: 첫 지지발의 현재 포즈(current stance), [0, T1(=TstepStart)]
+        // plan_[1]: 첫 지지발(current stance), [T_start_, T_start_+Tstep]
         {
             Support sp; sp.side = firstStance;
             Pose2 f = footOf(firstStance);
             sp.fx = f.x; sp.fy = f.y; sp.fyaw = f.yaw;
             sp.tx = anchor_tx_; sp.ty = anchor_ty_; sp.tyaw = anchor_tyaw_;
-            sp.t0 = 0.0; sp.t1 = T1;
+            sp.t0 = T_start_; sp.t1 = T_start_ + p_.Tstep;
             plan_.push_back(sp);
         }
         anchor_side_ = firstStance;
-        anchor_t1_ = T1;
+        anchor_t1_ = T_start_ + p_.Tstep;
         extendPlan();
         prev_cur_ = 1;
     }
@@ -176,6 +192,36 @@ void FootstepGenerator::update(double dt, const VelocityCommand& cmd) {
     // --- 보행 진행 ---
     t_ += dt;
     cmd_ = cmd;
+
+    // (A) 종료 ZMP shift 진행 중: 지지발 → 양발중앙. 끝나면 정지(Stand).
+    if (final_shift_) {
+        if (t_ >= final_t0_ + T_end_) {
+            walking_ = false; final_shift_ = false;
+            phase_ = GaitPhase::Stand;
+            left_foot_ = final_left_; right_foot_ = final_right_;
+            support_side_ = Side::Left; support_pose_ = left_foot_;
+            swing_target_ = FootPose{right_foot_.x, right_foot_.y, 0.0, right_foot_.yaw};
+            plan_.clear();
+            return;
+        }
+        phase_ = GaitPhase::DoubleSupport;   // support/swing 은 shift 시작 때 고정. ZMP 는 zmpAt.
+        support_switched_ = false;
+        return;
+    }
+
+    // (B) 초기 ZMP shift: 양발중앙 → 첫 지지발. 스텝 없이 체중만 천천히 옮긴다.
+    if (t_ < T_start_) {
+        phase_ = GaitPhase::DoubleSupport;
+        support_side_ = first_stance_;
+        Pose2 f  = (first_stance_ == Side::Left) ? left_foot_ : right_foot_;
+        support_pose_ = f;
+        Pose2 fw = (first_stance_ == Side::Left) ? right_foot_ : left_foot_;  // 스윙(반대발) 유지
+        swing_target_ = FootPose{fw.x, fw.y, 0.0, fw.yaw};
+        support_switched_ = false;
+        return;
+    }
+
+    // (C) 스테핑.
     regenerateTail();      // 최신 명령으로 미확정 미래 재생성(1초 윈도우 실시간 반영)
 
     int cur = currentIndex();
@@ -186,38 +232,53 @@ void FootstepGenerator::update(double dt, const VelocityCommand& cmd) {
     support_side_ = plan_[cur].side;
     support_pose_ = Pose2{plan_[cur].fx, plan_[cur].fy, plan_[cur].fyaw};
 
-    // graceful stop: 정지 요청 후 한 스텝(지지 교체)이 마무리되면 정지 확정.
+    // graceful stop: 정지 요청 후 한 스텝(지지 교체)이 마무리되면 → 종료 ZMP shift 시작.
     if (stopping_ && support_switched_) {
         Pose2 supF{plan_[cur].fx, plan_[cur].fy, plan_[cur].fyaw};
         Pose2 othF{plan_[cur - 1].fx, plan_[cur - 1].fy, plan_[cur - 1].fyaw};
-        if (support_side_ == Side::Left) { left_foot_ = supF; right_foot_ = othF; }
-        else                             { right_foot_ = supF; left_foot_ = othF; }
-        walking_ = false; stopping_ = false;
-        phase_ = GaitPhase::Stand;
-        support_side_ = Side::Left; support_pose_ = left_foot_;
-        swing_target_ = FootPose{right_foot_.x, right_foot_.y, 0.0, right_foot_.yaw};
-        plan_.clear();
+        if (support_side_ == Side::Left) { final_left_ = supF; final_right_ = othF; }
+        else                             { final_right_ = supF; final_left_ = othF; }
+        final_shift_ = true; stopping_ = false;
+        final_t0_ = t_;
+        fshift_from_x_ = supF.x; fshift_from_y_ = supF.y;                 // 지지발
+        fshift_to_x_ = 0.5 * (final_left_.x + final_right_.x);            // 양발 중앙
+        fshift_to_y_ = 0.5 * (final_left_.y + final_right_.y);
+        support_pose_ = supF;                                            // 피벗 유지
+        swing_target_ = FootPose{othF.x, othF.y, 0.0, othF.yaw};
+        phase_ = GaitPhase::DoubleSupport;
         return;
     }
 
-    // 스윙발: cur-1(이전 착지) -> cur+1(다음 착지), 단일지지 구간에서 이동.
-    // 스텝마다 주기가 다를 수 있으므로(시작/끝 램프) 해당 구간의 실제 길이를 쓴다.
+    // 스윙발: cur-1(이전 착지) -> cur+1(다음 착지).
+    //
+    // 한 지지구간 [t0, t1) 의 구성 — DS 를 앞뒤로 "절반씩" 나눈다:
+    //     │◀ Tds/2 (DS) ▶│◀── (1−dsRatio)·Tstep (SS) ──▶│◀ Tds/2 (DS) ▶│
+    //     t0            이륙                           착지            t1
+    //   이렇게 두면 지지 교체 경계(t1)를 중심으로 "앞 구간의 뒤쪽 반쪽 DS"와
+    //   "뒤 구간의 앞쪽 반쪽 DS"가 이어져 길이 Tds 의 연속된 양발지지 구간이 된다.
+    //   예) Tstep=1.0, dsRatio=0.5 → 0.25(DS) / 0.50(SS) / 0.25(DS).
+    // 스텝마다 주기가 다를 수 있으므로 해당 구간의 실제 길이를 쓴다.
     const Support& from = plan_[cur - 1];
     const Support& to   = plan_[std::min<int>(cur + 1, (int)plan_.size() - 1)];
     const double Tstep = plan_[cur].t1 - plan_[cur].t0;
-    const double Tds = p_.dsRatio * Tstep;
+    const double Th    = 0.5 * clampd(p_.dsRatio, 0.0, 1.0) * Tstep;  // 앞/뒤 반쪽 DS
+    const double tLift = Th;                                          // 이륙 시각
+    const double tLand = Tstep - Th;                                  // 착지 시각
     double tau = t_ - plan_[cur].t0;
 
-    if (tau < Tds) {
+    if (tau < tLift) {              // 앞쪽 DS: 스윙발은 아직 이전 착지점에 접지
         phase_ = GaitPhase::DoubleSupport;
         swing_target_ = FootPose{from.fx, from.fy, 0.0, from.fyaw};
-    } else {
+    } else if (tau < tLand) {       // SS: 들기 → 이동 → 내리기 (양 끝 속도 0)
         phase_ = GaitPhase::SingleSupport;
-        double x = cycloidXY(tau, Tds, Tstep, from.fx, to.fx);
-        double y = cycloidXY(tau, Tds, Tstep, from.fy, to.fy);
-        double yaw = cycloidXY(tau, Tds, Tstep, from.fyaw, to.fyaw);
-        double z = swingHeight(tau, Tds, Tstep, p_.stepHeight);
+        double x   = cycloidXY(tau, tLift, tLand, from.fx, to.fx);
+        double y   = cycloidXY(tau, tLift, tLand, from.fy, to.fy);
+        double yaw = cycloidXY(tau, tLift, tLand, from.fyaw, to.fyaw);
+        double z   = swingHeight(tau, tLift, tLand, p_.stepHeight);
         swing_target_ = FootPose{x, y, z, yaw};
+    } else {                        // 뒤쪽 DS: 이미 착지 완료, 새 착지점에 접지 유지
+        phase_ = GaitPhase::DoubleSupport;
+        swing_target_ = FootPose{to.fx, to.fy, 0.0, to.fyaw};
     }
 
     // plan_ 앞부분(더 이상 필요 없는 과거 지지구간)을 잘라 무한 증가를 막는다.

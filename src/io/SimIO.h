@@ -27,11 +27,24 @@ public:
 
     // 모터 위치 서보 제어 이득 설정(init 전에 호출). 기본값은 gConfig.servoKp/Kv.
     void setServoGains(double kp, double kv) { servo_kp_ = kp; servo_kv_ = kv; }
+    void setServoIntegral(double ki, double clampRad) { servo_ki_ = ki; i_clamp_ = clampRad; }
+    void setGravityComp(double g) { grav_comp_ = g; }
+    // 속도 피드포워드 계수(0=off, 1=완전보상). MuJoCo 위치서보의 −kv·q̇ 를 상쇄한다.
+    void setVelFeedforward(double a) { kv_ff_ = a; }
 
     // 측정 COM (sim 의 subtree_com, world x,y).
     Eigen::Vector2d measuredCom() const;
-    // 측정 ZMP = 지면 접촉 CoP (world x,y). 접촉 없으면(공중) false.
+    // 측정 COM (world x,y,z) — 그래픽 마커용.
+    Eigen::Vector3d measuredCom3() const;
+
+    // 측정 ZMP = 양발 **F/T 센서** wrench 로부터 구한 지면 CoP (world x,y).
+    //   실제 로봇과 동일한 신호원(F/T)을 쓰므로 RealIO 로 그대로 이식된다.
+    //   양발 모두 하중이 없으면(공중) false.
     bool measuredZmp(Eigen::Vector2d& zmp) const;
+
+    // 검증용: MuJoCo 접촉력(mj_contactForce) 기반 CoP. 시뮬레이터 전용.
+    //   measuredZmp() 의 F/T 경로가 맞는지 대조하는 데 쓴다(정지 시 두 값의 차 ≈ 1.7 mm).
+    bool measuredZmpContact(Eigen::Vector2d& zmp) const;
 
     MujocoEnv& env() { return env_; }
 
@@ -43,6 +56,18 @@ private:
     // 모터 위치 서보 제어 이득(gConfig 에서 기본값, setServoGains 로 오버라이드).
     double servo_kp_ = config::gConfig.servoKp;
     double servo_kv_ = config::gConfig.servoKv;
+    double servo_ki_     = config::gConfig.servoKi;         // 적분 I텀
+    double i_clamp_      = config::gConfig.servoIClampRad;  // anti-windup(위치 오프셋)
+    double grav_comp_    = config::gConfig.gravityComp;     // 중력보상 FF 계수
+    double   kv_ff_      = config::gConfig.servoKvFF;       // 속도 FF 계수
+    VectorXd eint_;                                         // 관절별 적분 오차 ∫e
+    VectorXd qdes_prev_;                                    // 직전 tick 위치 지령(q̇_des 산출용)
+    bool     have_qdes_prev_ = false;
+
+    // 발 F/T 센서: sensordata 주소와 site id(월드 포즈용). 없으면 -1.
+    int ft_adr_[4]  = {-1, -1, -1, -1};   // [LF_force, LF_torque, RF_force, RF_torque]
+    int ft_site_[2] = {-1, -1};           // [LF_FT, RF_FT]
+    bool ft_ok_ = false;                  // 4개 센서 + 2개 site 를 모두 찾았는가
 
     double control_dt_ = config::gConfig.controlDt;   // 제어 주기 [s]
     int    substeps_   = 4;                            // control_dt / physics_timestep

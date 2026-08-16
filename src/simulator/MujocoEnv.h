@@ -49,6 +49,10 @@ public:
     // kinematics-level 제어는 이 모드 위에서 목표 관절각을 d->ctrl 에 쓴다.
     void setJointPositionMode(double kp, double kv);
 
+    // 특정 액추에이터(관절 인덱스 = nJoints 순서)의 위치 서보 이득만 개별 설정.
+    // setJointPositionMode 이후 호출(gaintype/biastype 은 이미 위치서보로 설정됨).
+    void setActuatorServoGain(int actIdx, double kp, double kv);
+
     // 현재 관절 자세를 위치 목표로 잡는다(현재 자세 유지). setJointPositionMode 후 호출.
     void holdCurrentPose();
 
@@ -76,6 +80,9 @@ public:
 
     // 실시간 보행 그래프. 매 tick 데이터를 push 하고, 'G' 키로 표시 토글.
     kin::WalkPlotter& walkPlotter() { return plotter_; }
+
+    // COM 목표(초록)/현재(빨강) 위치를 작은 구로 표시. 매 tick world 좌표를 넘긴다.
+    void setComMarkers(const double comRef[3], const double comCur[3]);
 
     mjModel* model() { return m_; }
     mjData*  data()  { return d_; }
@@ -109,6 +116,11 @@ private:
     // 실시간 보행 그래프
     kin::WalkPlotter plotter_;
     bool             show_plots_ = true;   // 기본 표시('G' 로 토글)
+
+    // COM 목표(초록)/현재(빨강) 마커 구. setComMarkers 로 갱신, render 에서 씬에 추가.
+    double com_ref_[3] = {0, 0, 0};
+    double com_cur_[3] = {0, 0, 0};
+    bool   markers_valid_ = false;
 
     // --- 좌상단 오버레이(실시간 배율/FPS/시뮬 시간) 통계 ---
     void drawOverlay(const mjrRect& viewport);

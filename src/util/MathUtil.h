@@ -107,6 +107,39 @@ inline MatrixXd dampedPinv(const MatrixXd& J, double lambda) {
 }
 
 // ---------------------------------------------------------------------------
+// 접촉 wrench → 지면(z = z0) 위 CoP(= 측정 ZMP)
+// ---------------------------------------------------------------------------
+//  f  : 지면반력 합력 (world 축)
+//  Mo : 그 반력의 world **원점** 기준 모멘트 합 (= Σ (m_i + p_i × f_i))
+//  z0 : CoP 를 구할 평면의 높이(보통 지면 0)
+//
+//  ZMP 정의: M_O = p_cop × f (수평성분).  p_cop = (x, y, z0) 로 두면
+//      M_O_x = y·f_z − z0·f_y ,   M_O_y = z0·f_x − x·f_z
+//  이므로 아래 두 식이 나온다.
+//
+//  부호 규약 무관: F/T 센서가 "지면→발"이 아니라 그 반작용을 내더라도
+//  (f, Mo) 가 함께 −1 배 되어 분자·분모가 같이 뒤집히므로 결과는 동일하다.
+//  (MuJoCo 의 force/torque 센서는 본 모델에서 fz<0 으로 나온다.)
+inline bool copOnPlane(const Vector3d& f, const Vector3d& Mo,
+                       double z0, double fzMin, Eigen::Vector2d& cop) {
+    if (std::fabs(f.z()) < fzMin) return false;      // 하중 없음(공중)
+    cop.x() = (z0 * f.x() - Mo.y()) / f.z();
+    cop.y() = (Mo.x() + z0 * f.y()) / f.z();
+    return true;
+}
+
+// 한 발 F/T 센서 측정치를 world 원점 기준 wrench 로 누적한다.
+//   ft : (fx,fy,fz, mx,my,mz) — **센서 site 프레임**, 센서 원점 기준 모멘트
+//   R, p : 센서 site 의 world 회전/위치
+inline void accumulateWrench(const Vector6d& ft, const Matrix3d& R, const Vector3d& p,
+                             Vector3d& fSum, Vector3d& MoSum) {
+    const Vector3d fw = R * ft.head(3);
+    const Vector3d mw = R * ft.tail(3);
+    fSum  += fw;
+    MoSum += mw + p.cross(fw);       // 센서 원점 기준 → world 원점 기준으로 이동
+}
+
+// ---------------------------------------------------------------------------
 // 보간
 // ---------------------------------------------------------------------------
 

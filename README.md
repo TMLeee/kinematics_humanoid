@@ -2,6 +2,9 @@
 
 MuJoCo-based **kinematic whole-body walking control** for the DYROS Tocabi v2 humanoid.
 
+This project is a restructuring of the kinematics-based humanoid control framework
+originally developed in 2019, rebuilt around MuJoCo.
+
 Keyboard-teleoperated walking built as a clean, swappable pipeline:
 
 ```
@@ -299,9 +302,18 @@ verified. The Jacobian column convention is `[base_lin(3), base_ang(3), joints(3
 
 ### Tuning
 
+**Motor control mode**: MuJoCo applies a direct torque law
+`τ = kp·(q_des − q) − kv·q̇` (an **impedance-style PD**, *not* a classic
+position→velocity→current cascade; there is no current loop). Pure PD leaves a
+gravity-load steady-state droop (≈ load/kp); an **integral term** (`servoKi`, added
+via a target offset `+(ki/kp)∫e` with anti-windup `servoIClampRad`) trims it
+(≈2.5°→2.2° at the loaded knee). An optional **gravity-compensation feedforward**
+(`gravityComp`, via `qfrc_applied`) exists but defaults off — naive `qfrc_bias`
+over-compensates for a robot in double contact; make it support-consistent before enabling.
+
 **All tunables live in one JSON file — [`config/walking_config.json`](config/walking_config.json)** —
 loaded at startup (no recompile needed; edit the JSON and re-run). It holds:
-motor position-servo gains (`servoKp/servoKv` — raise for stiffer joint tracking),
+motor position-servo gains (`servoKp/servoKv`; `servoKi` integral; `gravityComp`),
 gait pattern (`stepPeriod`, plus **separate `stepPeriodStart`/`stepPeriodEnd`** that
 make the first/last steps slower to soften the walk-start/stop ZMP transient,
 `doubleSupportRatio`, `stepHeight`, stride/sway limits),
@@ -313,10 +325,12 @@ file is auto-created from safe defaults). Each module's values come from here;
 runtime overrides exist too (`SimIO::setServoGains`, `HumanoidController::setGains`/`setGaitParams`).
 
 The headless harness `test/headless_walk_test.cpp` reads env vars for quick sweeps:
-`KIN_KP`, `KIN_KV` (servo gains), `KIN_VX`, `KIN_VY`, `KIN_VYAW` (walk speed),
-`KIN_TSTEP`, `KIN_DS`, `KIN_H` (gait), `KIN_COMZ` (COM height),
-`KIN_STAB` (experimental stabilizer), `KIN_WALKSEC`, and
-`KIN_COM/SWING/HAND/PELVIS` (task on/off). Example:
+`KIN_KP`/`KIN_KV`/`KIN_KI`/`KIN_GRAV` (servo), `KIN_VX`/`KIN_VY`/`KIN_VYAW` (walk speed),
+`KIN_TSTEP`/`KIN_TSTART`/`KIN_DS`/`KIN_H` (gait), `KIN_COMZ` (COM height),
+`KIN_STAB` (experimental COM feedback — off by default; naive gains destabilize),
+`KIN_WALKSEC`, `KIN_COM/SWING/HAND/PELVIS` (task on/off), and diagnostics
+`KIN_JUMP`(+`KIN_JTHR`) — per-tick joint-command spikes with the culprit task —
+and `KIN_WSTART` — walk-start ZMP/COM/foot-height trace. Example:
 
 ```bash
 KIN_KP=8000 KIN_VX=0.04 KIN_WALKSEC=6 ./headless_test   # stiffer servo, forward walk

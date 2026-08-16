@@ -175,6 +175,14 @@ void MujocoEnv::setJointPositionMode(double kp, double kv) {
     }
 }
 
+void MujocoEnv::setActuatorServoGain(int actIdx, double kp, double kv) {
+    if (!m_ || actIdx < 0 || actIdx >= m_->nu) return;
+    if (m_->actuator_trntype[actIdx] != mjTRN_JOINT) return;
+    m_->actuator_gainprm[actIdx * mjNGAIN + 0] =  kp;
+    m_->actuator_biasprm[actIdx * mjNBIAS + 1] = -kp;
+    m_->actuator_biasprm[actIdx * mjNBIAS + 2] = -kv;
+}
+
 void MujocoEnv::holdCurrentPose() {
     if (!m_ || !d_) return;
     for (int i = 0; i < m_->nu; ++i) {
@@ -195,6 +203,18 @@ bool MujocoEnv::render() {
     glfwGetFramebufferSize(window_, &viewport.width, &viewport.height);
 
     mjv_updateScene(m_, d_, &opt_, nullptr, &cam_, mjCAT_ALL, &scn_);
+
+    // COM 목표(초록)/현재(빨강) 를 작은 구로 씬에 추가(updateScene 이 ngeom 을 리셋하므로 이후에).
+    if (markers_valid_ && scn_.ngeom + 2 <= scn_.maxgeom) {
+        const mjtNum size[3] = {0.03, 0.03, 0.03};   // 반지름 3cm
+        const float  green[4] = {0.1f, 0.9f, 0.2f, 1.0f};   // COM 목표
+        const float  red[4]   = {0.95f, 0.15f, 0.1f, 1.0f}; // 현재 COM
+        const mjtNum ref[3] = {com_ref_[0], com_ref_[1], com_ref_[2]};
+        const mjtNum cur[3] = {com_cur_[0], com_cur_[1], com_cur_[2]};
+        mjv_initGeom(&scn_.geoms[scn_.ngeom++], mjGEOM_SPHERE, size, ref, nullptr, green);
+        mjv_initGeom(&scn_.geoms[scn_.ngeom++], mjGEOM_SPHERE, size, cur, nullptr, red);
+    }
+
     mjr_render(viewport, &scn_, &con_);
     drawOverlay(viewport);
     if (show_plots_) plotter_.render(viewport, &con_);
@@ -202,6 +222,11 @@ bool MujocoEnv::render() {
     glfwSwapBuffers(window_);
     glfwPollEvents();
     return true;
+}
+
+void MujocoEnv::setComMarkers(const double comRef[3], const double comCur[3]) {
+    for (int i = 0; i < 3; ++i) { com_ref_[i] = comRef[i]; com_cur_[i] = comCur[i]; }
+    markers_valid_ = true;
 }
 
 // 좌상단에 실시간 배율 / FPS / 시뮬레이션 시간을 작은 글씨로 표시한다.

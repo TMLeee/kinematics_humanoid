@@ -87,12 +87,22 @@ int main(int argc, char** argv) {
         io.setStatus(controller.statusText());
         io.writeJointTargets(qDes);
 
-        // 실시간 그래프 데이터: 목표(제어기) + 측정(시뮬레이터).
+        // 실시간 그래프 데이터: 전부 "로봇이 스스로 아는 값"으로 그린다.
+        //   COM  : 지지발 지면고정 가정 + 측정 관절각 FK (dbg.comMeas).
+        //          시뮬레이터의 subtree_com(자유베이스 = 글로벌 정답)은 실기에 없는 정보라
+        //          쓰지 않는다. 이렇게 해야 그래프가 실제 로봇에서 보게 될 것과 같아진다.
+        //   ZMP  : 발 F/T 센서 wrench 로부터 구한 지면 CoP (io.measuredZmp).
         const auto& dbg = controller.debug();
         Eigen::Vector2d zmpMeas;
         bool zmpValid = io.measuredZmp(zmpMeas);
+        Eigen::Vector2d comCur2(dbg.comMeas.x(), dbg.comMeas.y());
         io.env().walkPlotter().push(io.env().data()->time,
-            dbg.footstep, dbg.zmpRef, dbg.comRef, io.measuredCom(), zmpMeas, zmpValid);
+            dbg.footstep, dbg.zmpRef, dbg.comRef, comCur2, zmpMeas, zmpValid);
+
+        // 뷰어 COM 마커: 목표(초록)/현재(빨강) 를 작은 구로 표시.
+        double comRefMk[3] = {dbg.comRef.x(), dbg.comRef.y(), dbg.comRefZ};
+        double comCurMk[3] = {dbg.comMeas.x(), dbg.comMeas.y(), dbg.comMeas.z()};
+        io.env().setComMarkers(comRefMk, comCurMk);
 
         io.step();
         io.render();

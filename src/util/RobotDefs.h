@@ -51,6 +51,11 @@ enum JointIdx {
 // 다리 관절 그룹의 시작 인덱스(6개 연속).
 constexpr int legJointStart(Side s) { return s == Side::Left ? L_HipYaw : R_HipYaw; }
 
+// 양팔 관절(각 8 DOF, 목/머리는 제외). 팔 자세 유지 task 의 대상.
+inline constexpr std::array<int, 16> kArmJoints = {
+    L_Shoulder1, L_Shoulder2, L_Shoulder3, L_Armlink, L_Elbow, L_Forearm, L_Wrist1, L_Wrist2,
+    R_Shoulder1, R_Shoulder2, R_Shoulder3, R_Armlink, R_Elbow, R_Forearm, R_Wrist1, R_Wrist2};
+
 // ---- 주요 바디 이름(MuJoCo body / RBDL body 공통 명명) ----
 struct BodyNames {
     static constexpr const char* Pelvis    = "base_link";
@@ -67,6 +72,19 @@ struct BodyNames {
 // 발목 롤 링크 원점에서 발바닥 접촉 중심까지의 로컬 오프셋(m).
 // 서있는 자세에서 발목 롤 링크가 z≈0.16 에 있으므로 발바닥은 약 -0.16.
 constexpr double kSoleOffsetZ = -0.1585;
+
+// 발 F/T 센서 site(LF_FT / RF_FT)의 발목 롤 링크 기준 z 오프셋(m).
+//   모델 XML: <site class="FTsensor" name="LF_FT" pos="0 0 -0.09"/>
+constexpr double kFtSiteZ = -0.09;
+// 센서 원점 → 발바닥 평면의 z (음수). 센서 프레임에서 CoP 를 풀 때 쓴다.
+constexpr double kFtToSoleZ = kSoleOffsetZ - kFtSiteZ;   // = -0.0685
+
+// 발바닥 접촉 box (모델 XML: size="0.15 0.065 0.0135" pos="0.03 0 -0.145").
+//   발목 원점 기준으로 앞뒤 중심이 +0.03 만큼 앞에 있고, 좌우는 정확히 중앙이다.
+constexpr double kFootHalfLen    = 0.15;
+constexpr double kFootHalfWidth  = 0.065;
+constexpr double kFootCenterX    = 0.03;   // 발목 기준 발 box 중심 x
+constexpr double kFootCenterY    = 0.0;    // 좌우는 중앙
 
 // 기본 보행 파라미터(기하)
 constexpr double kHalfStanceWidth = 0.1025;  // 골반 중심 기준 발 좌우 오프셋(m)

@@ -13,6 +13,7 @@
 #include <string>
 
 #include "config/WalkingConfig.h"
+#include "controller/AnkleAdmittance.h"
 #include "controller/FootstepGenerator.h"
 #include "controller/PreviewController.h"
 #include "controller/WholeBodyIK.h"
@@ -68,19 +69,54 @@ public:
     //   ankle strategy 를 여기에 제대로 설계해 넣어야 한다(향후 과제).
     void setStabilizer(double alpha) { stabAlpha_ = alpha; }
 
+    // 발목 어드미턴스 파라미터. init 전에 호출.
+    void setAnkleAdmittance(const AnkleAdmittance::Params& p) { admParams_ = p; }
+    const AnkleAdmittance& ankleAdmittance() const { return adm_; }
+
     const std::string& statusText() const { return status_; }
 
     // 그래프/디버그용 내부 신호(제어기가 매 tick 산출).
     struct DebugSignals {
         Eigen::Vector2d footstep = Eigen::Vector2d::Zero();  // 지지발(footstep) 중심 (x,y)
-        Eigen::Vector2d zmpRef   = Eigen::Vector2d::Zero();  // 목표 ZMP (footstep 생성기)
+        Eigen::Vector2d zmpRef   = Eigen::Vector2d::Zero();  // 목표 ZMP (footstep 생성기, step 입력)
         Eigen::Vector2d comRef   = Eigen::Vector2d::Zero();  // preview COM 목표
+        // 로봇이 스스로 계산한 현재 COM: "지지발이 지면에 고정" 가정 + 측정 관절각 FK.
+        //   시뮬레이터의 자유베이스(글로벌 정답)를 쓰지 않으므로 실기에서도 동일하게 얻는다.
+        //   → 그래프/마커의 "현재 COM" 은 이 값을 써야 실제 로봇과 같은 것을 보게 된다.
+        Eigen::Vector3d comMeas  = Eigen::Vector3d::Zero();
+        bool comMeasValid = false;
+        // --- 발목 어드미턴스 진단 ---
+        Eigen::Vector2d copFoot[2] = {Eigen::Vector2d::Zero(), Eigen::Vector2d::Zero()}; // 발 로컬 CoP (L,R)
+        double footFz[2] = {0.0, 0.0};        // 발 수직 하중 [N] (L,R)
+        double ankleDPitch[2] = {0.0, 0.0};   // 발목 보정 [rad] (L,R)
+        double ankleDRoll [2] = {0.0, 0.0};
+        bool   admActive = false;
+        Eigen::Vector2d zmpFromCom = Eigen::Vector2d::Zero();// LIPM: COM ref 에서 나오는 ZMP(=C·x)
+        double comRefZ = 0.0;                                // COM ref 높이(그래픽 구 표시용)
         bool walking = false;
+
+        // --- 점프 진단용 ---
+        double dqMax = 0.0;         // 이 tick 최대 |dq_i| [rad/s]
+        int    dqMaxJoint = -1;     // 그 관절 인덱스
+        double qStep = 0.0;         // 이 tick 최대 관절 지령 변화 |Δq_i| [rad]
+        // 각 task 의 목표속도(xdot) 노름 — 어느 task 가 점프를 유발하는지 특정
+        double xdotCom = 0, xdotSwing = 0, xdotHand = 0, xdotPelvis = 0, xdotWaist = 0;
+        // 각 task 오차 노름
+        double errCom = 0, errSwing = 0, errPelvis = 0;
+        int    supportSide = 0;     // 0=L, 1=R
+        bool   supportSwitched = false;
+        double swingZ = 0.0;        // 스윙발 지령 높이 [m]
+        int    phase = 0;           // 0=stand,1=DS,2=SS
     };
     const DebugSignals& debug() const { return dbg_; }
 
 private:
     void startWBC(const RobotState& s);   // 준비 자세에서 WBC(footstep/preview/IK) 초기화·시작
+
+    // "지지발이 지면에 고정되어 있다"고 가정하고, 주어진 관절각으로 전신 COM 을 푼다.
+    //   floating-base 추정에 의존하지 않으므로 실제 로봇에서도 그대로 성립한다.
+    //   주의: 내부 모델 상태를 덮어쓴다(호출 후 반드시 다시 setState 할 것).
+    Vector3d comWithPlantedFoot(const VectorXd& qJoints, int supId);
 
     RobotModel* model_ = nullptr;
     double dt_ = 0.002;
@@ -104,9 +140,18 @@ private:
     // 바디 id 캐시
     int idPelvis_ = -1, idLFoot_ = -1, idRFoot_ = -1, idLHand_ = -1, idRHand_ = -1;
 
-    double comRefZ_ = 0.88;                       // 유지할 COM 높이(world z)
+    double comRefZ_  = 0.88;                      // 유지할 COM 높이(world z) — COM task 목표
+    double comLipmZ_ = 0.88;                      // LIPM 높이 zc = 기준면 위 COM 높이(preview 용)
     double comHeightOverride_ = config::gConfig.comHeight; // >0 이면 이 높이로 override
-    Vector3d soleOffset_{0, 0, kSoleOffsetZ};
+
+    // 발 기준점(footRef): LIPM/ZMP·지지 제약·스윙발 목표가 공유하는 발 위의 점.
+    //   ANKLE 모드: AnkleRoll 링크 원점, 지면 위 +0.1585 m.
+    //   SOLE  모드(기존): 발바닥, 지면 z=0.
+    //   기준면이 올라가면 LIPM 의 zc 가 그만큼 줄고 ω=√(g/zc) 가 커진다.
+    static bool useAnkleRef() { return config::gConfig.footRefAnkle > 0.5; }
+    Vector3d footRefOffset_{0, 0, 0};             // 발 링크 원점 기준 로컬 오프셋
+    double   footRefZ_ = 0.0;                     // 발 평지 접지 시 기준점의 world z
+    Vector3d soleOffset_{0, 0, kSoleOffsetZ};     // (발바닥 — 진단/외부용)
 
     // 내부(피드포워드) 모델 상태: 지지발을 정확히 고정한 채 base 를 지지발 제약으로
     // 적분한다. 측정값에 앵커링하지 않으므로 키네마틱 드리프트가 없다.
@@ -116,12 +161,13 @@ private:
     VectorXd   qInt_;                // 조립된 내부 전체 좌표(nq)
     VectorXd   qlo_, qhi_;           // 관절 한계(선택)
 
-    // 손을 골반 프레임에 고정(자연스러운 팔 유지)하기 위한 상대 변환.
-    Matrix3d handRrel_[2];
-    Vector3d handPrel_[2];
+    // 양팔 유지 목표 관절각(startWBC 시점 = 보행 준비 자세). kArmJoints 성분만 사용.
+    VectorXd armHold_;
 
-    // 스윙발 피드포워드용 이전 목표.
+    // 스윙발 피드포워드용 이전 목표 + 스윙발 side(정체성 변경 검출).
     FootPose prevSwing_;
+    Side prevSwingSide_ = Side::Right;
+    bool haveSwingSide_ = false;
     bool prevWalking_ = false;
     bool first_ = true;
 
@@ -129,6 +175,14 @@ private:
     double stabAlpha_ = 0.0;
     Eigen::Vector2d prevComMeas_ = Eigen::Vector2d::Zero();
     bool haveComMeas_ = false;
+
+    // 발목 어드미턴스(F/T 기반 발바닥 CoP 순응).
+    AnkleAdmittance adm_;
+    AnkleAdmittance::Params admParams_{
+        config::gConfig.ankleAdmEnable, config::gConfig.ankleAdmKPitch,
+        config::gConfig.ankleAdmKRoll,  config::gConfig.ankleAdmTau,
+        config::gConfig.ankleAdmClamp,  config::gConfig.ankleAdmFtTau,
+        config::gConfig.ankleAdmFzMin,  config::gConfig.ankleAdmFzNom, 0.0, 0.0};
 
     std::string status_;
     DebugSignals dbg_;

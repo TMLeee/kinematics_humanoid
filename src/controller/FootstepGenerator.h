@@ -25,6 +25,9 @@ public:
         double TstepStart = config::gConfig.stepPeriodStart;   // 시작 스텝 주기
         double TstepEnd   = config::gConfig.stepPeriodEnd;     // 정지 스텝 주기
         int    startRamp  = config::gConfig.startRampSteps;    // 시작→정상 램프 스텝 수
+        // 한 스텝 주기에서 양발지지가 차지하는 비율. Tds = dsRatio·Tstep 을 스텝의
+        // 앞뒤로 절반씩(Tds/2) 나눠 배치한다 → DS(Tds/2) / SS(1−dsRatio) / DS(Tds/2).
+        //   예) Tstep=1.0, dsRatio=0.5 → 0.25 / 0.50 / 0.25.
         double dsRatio    = config::gConfig.doubleSupportRatio;
         double stepHeight = config::gConfig.stepHeight;
         double halfWidth  = config::gConfig.halfWidth;
@@ -59,8 +62,19 @@ public:
 
     double comHeight() const { return com_z_; }
 
-    // 디버그: 현재 desired ZMP.
-    void currentZmp(double& zx, double& zy) const { zmpAt(t_, zx, zy); }
+    // 현재 desired ZMP. zmpPreview() 의 k=0 샘플과 반드시 같은 값이어야 한다.
+    //   [버그 수정] 정지(!walking_ || plan_ 비어있음) 중에는 zmpPreview() 가 양발 중점을
+    //   쓰는데 zmpAt() 는 support_pose_(지지발)를 돌려주어 y 로 halfWidth(=102.5 mm)
+    //   만큼 어긋났다. 그래프의 가짜 ZMP 오차이자, 이 값을 목표로 쓰는 쪽에서는
+    //   실제 제어 오차였다. 두 경로를 하나로 맞춘다.
+    void currentZmp(double& zx, double& zy) const {
+        if (!walking_ || plan_.empty()) {
+            zx = 0.5 * (left_foot_.x + right_foot_.x);
+            zy = 0.5 * (left_foot_.y + right_foot_.y);
+            return;
+        }
+        zmpAt(t_, zx, zy);
+    }
 
 private:
     // 하나의 지지구간(이 발이 ZMP 를 담당하는 [t0, t1)).
@@ -69,6 +83,8 @@ private:
         double fx, fy, fyaw;      // 발 착지 포즈(world)
         double tx, ty, tyaw;      // 이 스텝의 토르소 앵커(재생성용)
         double t0, t1;
+        bool   seed = false;      // 보행 시작 시드(plan_[0] = 첫 스윙발의 출발 포즈)
+                                  //   ZMP 가 계단형이 된 뒤로는 분기에 쓰이지 않는다(계보 표시용).
     };
 
     void extendPlan();                     // 미래 지지구간을 필요한 만큼 확장
@@ -99,8 +115,22 @@ private:
 
     VelocityCommand cmd_;
     int prev_cur_ = -1;                    // 지지 교체 검출용
-    int  step_count_ = 0;                  // append 된 스텝 인덱스(시작 램프용)
+    int  step_count_ = 0;                  // append 된 스텝 인덱스
     bool stopping_ = false;                // 정지 요청 후 마지막 스텝 마무리 중
+
+    // ── 초기/종료 ZMP shift 페이즈 ──────────────────────────────────────────────
+    //  시작: [0, T_start_) 동안 ZMP 를 양발중앙 → 첫 지지발 로 천천히 이동(스텝 없음).
+    //  종료: 마지막 스텝 후 [.., T_end_) 동안 ZMP 를 지지발 → 양발중앙 으로 이동.
+    double T_start_ = 0.0, T_end_ = 0.0;   // shift 지속시간(= TstepStart/TstepEnd)
+    double center_x_ = 0.0, center_y_ = 0.0;   // 양발 중앙(시작 shift 출발점)
+    double sshift_to_x_ = 0.0, sshift_to_y_ = 0.0;  // 시작 shift 도착점(첫 지지발)
+    Side   first_stance_ = Side::Right;
+    // 종료 shift
+    bool   final_shift_ = false;
+    double final_t0_ = 0.0;
+    double fshift_from_x_ = 0.0, fshift_from_y_ = 0.0;  // 지지발(출발)
+    double fshift_to_x_ = 0.0, fshift_to_y_ = 0.0;      // 양발 중앙(도착)
+    Pose2  final_left_, final_right_;                   // 종료 시 확정 양발
 };
 
 }  // namespace kin

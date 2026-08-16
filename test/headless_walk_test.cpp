@@ -15,6 +15,9 @@ int main(int argc, char** argv) {
 
     // 설정 로드(객체 생성 전): config/walking_config.json → gConfig.
     kin::config::loadFromJson(kin::config::kDefaultConfigPath);
+    // 이득/폐루프 오버라이드(제어기 생성 전이어야 g_ 기본값에 반영).
+    if (getenv("KIN_KPCOM")) kin::config::gConfig.kpCom = atof(getenv("KIN_KPCOM"));
+    if (getenv("KIN_CLOOP")) kin::config::gConfig.closedLoop = atof(getenv("KIN_CLOOP"));
 
     kin::SimIO io(model_path, /*with_viewer=*/false);
     // 모터 서보 이득 오버라이드(KIN_KP / KIN_KV) — init 전에 설정.
@@ -22,6 +25,11 @@ int main(int argc, char** argv) {
         double kp = getenv("KIN_KP") ? atof(getenv("KIN_KP")) : kin::config::gConfig.servoKp;
         double kv = getenv("KIN_KV") ? atof(getenv("KIN_KV")) : kin::config::gConfig.servoKv;
         io.setServoGains(kp, kv);
+        if (getenv("KIN_KI"))   io.setServoIntegral(atof(getenv("KIN_KI")), 0.10);
+        if (getenv("KIN_GRAV")) io.setGravityComp(atof(getenv("KIN_GRAV")));
+        if (getenv("KIN_KVFF")) io.setVelFeedforward(atof(getenv("KIN_KVFF")));
+        std::printf("servo override: kp=%.0f kv=%.0f kvFF=%s\n", kp, kv,
+                    getenv("KIN_KVFF") ? getenv("KIN_KVFF") : "(config)");
     }
     if (!io.init()) { std::printf("SimIO init failed\n"); return 1; }
 
@@ -41,6 +49,10 @@ int main(int argc, char** argv) {
         controller.setGaitParams(gp);
         if (getenv("KIN_COMZ")) controller.setComHeight(atof(getenv("KIN_COMZ")));
         if (getenv("KIN_STAB")) controller.setStabilizer(atof(getenv("KIN_STAB")));
+        // 폐루프(측정 관절각 + 지지발 지면고정으로 COM 계산) / 발 기준점 토글
+        if (getenv("KIN_CLOSED"))  kin::config::gConfig.closedLoop  = atof(getenv("KIN_CLOSED"));
+        if (getenv("KIN_ANKLEREF")) kin::config::gConfig.footRefAnkle = atof(getenv("KIN_ANKLEREF"));
+        if (getenv("KIN_COMMEAS"))  kin::config::gConfig.comMeasPlanted = atof(getenv("KIN_COMMEAS"));
         std::printf("gait: Tstep=%.2f dsRatio=%.2f stepH=%.3f comz=%s\n",
                     gp.Tstep, gp.dsRatio, gp.stepHeight, getenv("KIN_COMZ") ? getenv("KIN_COMZ") : "auto");
     }
@@ -81,12 +93,57 @@ int main(int argc, char** argv) {
                 model.com().x(), model.com().y(), model.com().z());
 
     bool ok = true;
+    kin::VectorXd lastQDes;
     auto tick = [&](kin::VelocityCommand cmd, int k, const char* tag) {
         io.read(state);
         kin::VectorXd qDes = controller.update(state, cmd);
+        lastQDes = qDes;
         for (int i = 0; i < qDes.size(); ++i)
             if (std::isnan(qDes(i)) || std::isinf(qDes(i))) { ok = false; }
         io.writeJointTargets(qDes);
+        // 점프 진단: 한 tick 관절 지령 변화(qStep)가 임계 이상이면 유발 task 와 함께 출력.
+        if (getenv("KIN_JUMP")) {
+            const auto& d = controller.debug();
+            double thr = getenv("KIN_JTHR") ? atof(getenv("KIN_JTHR")) : 0.004;  // rad/tick
+            if (d.qStep > thr) {
+                std::printf("JUMP %s t=%.3f qStep=%.4f dqMax=%.2f@j%d | xdot: com=%.2f sw=%.2f hand=%.2f pel=%.2f wst=%.2f | err: com=%.3f sw=%.3f pel=%.3f | sup=%s%s\n",
+                    tag, k * dt, d.qStep, d.dqMax, d.dqMaxJoint,
+                    d.xdotCom, d.xdotSwing, d.xdotHand, d.xdotPelvis, d.xdotWaist,
+                    d.errCom, d.errSwing, d.errPelvis,
+                    d.supportSide == 0 ? "L" : "R", d.supportSwitched ? " SWITCH" : "");
+            }
+        }
+        // walk-start 상세 궤적: 발이 뜨는 원인(COM이 지지발 위로 오기 전에 스윙 리프트?).
+        if (getenv("KIN_WSTART") && (std::string(tag) == "WALK" || std::string(tag) == "STOP")
+            && k * dt < 5.0 && k % (int)std::lround(0.2 / dt) == 0) {
+            const auto& d = controller.debug();
+            io.read(state);
+            Eigen::Vector2d cm = io.measuredCom();
+            Eigen::Vector2d zm; bool zv = io.measuredZmp(zm);
+            model.setState(state.q, kin::VectorXd::Zero(model.nv()));
+            model.updateKinematics();
+            kin::Vector3d off(0, 0, kin::kSoleOffsetZ);
+            double Lz = model.bodyPos(model.bodyId(kin::BodyNames::LFoot), off).z();
+            double Rz = model.bodyPos(model.bodyId(kin::BodyNames::RFoot), off).z();
+            const char* ph = d.phase == 2 ? "SS" : d.phase == 1 ? "DS" : "st";
+            std::printf("WS %s t=%.2f %s sup=%s | zmpRef.y=%+.3f comRef.y=%+.3f | comMeas.y=%+.3f zmpMeas.y=%+.3f | swZcmd=%.3f | Lz=%.3f Rz=%.3f\n",
+                tag, k * dt, ph, d.supportSide == 0 ? "L" : "R",
+                d.zmpRef.y(), d.comRef.y(), cm.y(), zv ? zm.y() : 9.99, d.swingZ, Lz, Rz);
+        }
+        // LIPM 검증: step ZMP ref 를 preview COM 이 잘 따라가는지.
+        //   zmpRef(step 입력) vs comRef(preview 출력) vs zmpLIPM(=C·x, COM 에서 나오는 ZMP).
+        //   preview 가 옳으면 zmpLIPM ≈ zmpRef 이고 comRef 는 부드럽게 zmpRef 로 수렴.
+        if (getenv("KIN_LIPM") && std::string(tag) == "WALK" && k * dt < 6.0
+            && k % (int)std::lround(0.1 / dt) == 0) {
+            const auto& d = controller.debug();
+            Eigen::Vector2d zmMeas; bool zvMeas = io.measuredZmp(zmMeas);
+            Eigen::Vector2d cmMeas = io.measuredCom();
+            // 비교: zmpRef(입력) | comRef(preview) | zmpLIPM(=C·x, 모델 예측 ZMP)
+            //       | comMeas(실제 COM) | zmpMeas(실제 측정 ZMP, 접촉 CoP)
+            std::printf("LIPM t=%.2f Y| zmpRef=%+.3f comRef=%+.3f zmpLIPM=%+.3f || comMeas=%+.3f zmpMeas=%+.3f\n",
+                k * dt, d.zmpRef.y(), d.comRef.y(), d.zmpFromCom.y(),
+                cmMeas.y(), zvMeas ? zmMeas.y() : 9.99);
+        }
         // 신호 계측(그래프 오프셋 진단): ref(제어기) vs 측정(sim).
         if (getenv("KIN_SIG") && k % (int)std::lround(0.2 / dt) == 0) {
             const auto& d = controller.debug();
@@ -120,8 +177,18 @@ int main(int argc, char** argv) {
     for (int k = 1; k < (int)std::lround(3.0 / dt) && io.running(); ++k)
         tick(kin::VelocityCommand{}, k, "PREP");
     io.read(state);
-    std::printf(">> after prepare: base_z=%.3f mode=%s\n", state.q(2),
-                controller.mode() == kin::HumanoidController::Mode::Active ? "ACTIVE" : "NOT-ACTIVE");
+    // sag(추종오차) 계측: 준비자세 유지 중 max |qDes - q_meas| (부하로 인한 처짐).
+    {
+        double sag = 0.0; int jmax = -1;
+        for (int i = 0; i < lastQDes.size(); ++i) {
+            double e = std::fabs(lastQDes(i) - state.q(kin::kBaseQ + i));
+            if (e > sag) { sag = e; jmax = i; }
+        }
+        std::printf(">> after prepare: base_z=%.3f mode=%s | SAG max|qDes-q|=%.4f rad (%.2f deg) @j%d\n",
+                    state.q(2),
+                    controller.mode() == kin::HumanoidController::Mode::Active ? "ACTIVE" : "NOT-ACTIVE",
+                    sag, sag * 57.2958, jmax);
+    }
 
     // --- Space 로 보행 시작(엣지 한 번) + 속도 유지 ---
     double vx = getenv("KIN_VX") ? atof(getenv("KIN_VX")) : 0.04;

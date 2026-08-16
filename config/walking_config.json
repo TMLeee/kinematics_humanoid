@@ -4,7 +4,15 @@
   "controlDt": 0.002,
 
   "servoKp": 20000.0,
-  "servoKv": 500.0,
+  "servoKv": 300.0,
+  "servoKi": 100.0,
+  "servoIClampRad": 0.10,
+  "anklePitchKp": 0.0,
+  "anklePitchKv": 0.0,
+  "ankleRollKp": 0.0,
+  "ankleRollKv": 0.0,
+  "gravityComp": 0.0,
+  "servoKvFF": 1.0,
 
   "stepPeriod": 1.0,
   "stepPeriodStart": 2.0,
@@ -37,6 +45,16 @@
   "lamHand": 1.0e-2,
   "lamPelvis": 1.0e-2,
   "lamWaist": 1.0e-2,
+
+  "_ankleAdm": "발목 어드미턴스(F/T 기반 발바닥 CoP 순응). ankleAdmEnable=0 이면 off.",
+  "ankleAdmEnable": 0.0,
+  "ankleAdmKPitch": 0.05,
+  "ankleAdmKRoll": 0.015,
+  "ankleAdmTau": 0.05,
+  "ankleAdmClamp": 0.10,
+  "ankleAdmFtTau": 0.02,
+  "ankleAdmFzMin": 30.0,
+  "ankleAdmFzNom": 469.0,
 
   "vFwdMax": 0.06,
   "vLatMax": 0.04,

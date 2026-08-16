@@ -49,6 +49,10 @@ public:
     // kinematics-level 제어는 이 모드 위에서 목표 관절각을 d->ctrl 에 쓴다.
     void setJointPositionMode(double kp, double kv);
 
+    // 특정 액추에이터(관절 인덱스 = nJoints 순서)의 위치 서보 이득만 개별 설정.
+    // setJointPositionMode 이후 호출(gaintype/biastype 은 이미 위치서보로 설정됨).
+    void setActuatorServoGain(int actIdx, double kp, double kv);
+
     // 현재 관절 자세를 위치 목표로 잡는다(현재 자세 유지). setJointPositionMode 후 호출.
     void holdCurrentPose();
 

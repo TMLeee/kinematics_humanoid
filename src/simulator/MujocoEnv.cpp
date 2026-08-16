@@ -175,6 +175,14 @@ void MujocoEnv::setJointPositionMode(double kp, double kv) {
     }
 }
 
+void MujocoEnv::setActuatorServoGain(int actIdx, double kp, double kv) {
+    if (!m_ || actIdx < 0 || actIdx >= m_->nu) return;
+    if (m_->actuator_trntype[actIdx] != mjTRN_JOINT) return;
+    m_->actuator_gainprm[actIdx * mjNGAIN + 0] =  kp;
+    m_->actuator_biasprm[actIdx * mjNBIAS + 1] = -kp;
+    m_->actuator_biasprm[actIdx * mjNBIAS + 2] = -kv;
+}
+
 void MujocoEnv::holdCurrentPose() {
     if (!m_ || !d_) return;
     for (int i = 0; i < m_->nu; ++i) {

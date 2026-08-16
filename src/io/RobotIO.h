@@ -31,8 +31,14 @@ struct VelocityCommand {
 struct RobotState {
     VectorXd q;          // nq(=40): [base_pos(3), base_quat(w,x,y,z), joints(33)]
     VectorXd dq;         // nv(=39): [base_lin(3), base_ang(3), joints(33)]
-    Vector6d ftLeft  = Vector6d::Zero();   // 왼발 F/T (fx,fy,fz,mx,my,mz)
-    Vector6d ftRight = Vector6d::Zero();   // 오른발 F/T
+    // 발 F/T (fx,fy,fz, mx,my,mz).
+    //   프레임: 센서 site 로컬 프레임. 모멘트는 **센서 원점** 기준.
+    //   부호: 백엔드 규약을 그대로 전달한다(MuJoCo 는 본 모델에서 지면반력의 반작용이라
+    //         정지 시 fz<0). ZMP/CoP 계산은 부호 규약에 무관하므로 변환하지 않는다.
+    //         (util/MathUtil.h 의 copOnPlane 주석 참조)
+    Vector6d ftLeft  = Vector6d::Zero();
+    Vector6d ftRight = Vector6d::Zero();
+    bool     ftValid = false;              // F/T 센서를 실제로 읽었는가
     bool     valid = false;
 
     RobotState() : q(VectorXd::Zero(kNq)), dq(VectorXd::Zero(kNv)) {}

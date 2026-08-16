@@ -25,6 +25,11 @@ int main(int argc, char** argv) {
         double kp = getenv("KIN_KP") ? atof(getenv("KIN_KP")) : kin::config::gConfig.servoKp;
         double kv = getenv("KIN_KV") ? atof(getenv("KIN_KV")) : kin::config::gConfig.servoKv;
         io.setServoGains(kp, kv);
+        if (getenv("KIN_KI"))   io.setServoIntegral(atof(getenv("KIN_KI")), 0.10);
+        if (getenv("KIN_GRAV")) io.setGravityComp(atof(getenv("KIN_GRAV")));
+        if (getenv("KIN_KVFF")) io.setVelFeedforward(atof(getenv("KIN_KVFF")));
+        std::printf("servo override: kp=%.0f kv=%.0f kvFF=%s\n", kp, kv,
+                    getenv("KIN_KVFF") ? getenv("KIN_KVFF") : "(config)");
     }
     if (!io.init()) { std::printf("SimIO init failed\n"); return 1; }
 
@@ -88,9 +93,11 @@ int main(int argc, char** argv) {
                 model.com().x(), model.com().y(), model.com().z());
 
     bool ok = true;
+    kin::VectorXd lastQDes;
     auto tick = [&](kin::VelocityCommand cmd, int k, const char* tag) {
         io.read(state);
         kin::VectorXd qDes = controller.update(state, cmd);
+        lastQDes = qDes;
         for (int i = 0; i < qDes.size(); ++i)
             if (std::isnan(qDes(i)) || std::isinf(qDes(i))) { ok = false; }
         io.writeJointTargets(qDes);
@@ -170,8 +177,18 @@ int main(int argc, char** argv) {
     for (int k = 1; k < (int)std::lround(3.0 / dt) && io.running(); ++k)
         tick(kin::VelocityCommand{}, k, "PREP");
     io.read(state);
-    std::printf(">> after prepare: base_z=%.3f mode=%s\n", state.q(2),
-                controller.mode() == kin::HumanoidController::Mode::Active ? "ACTIVE" : "NOT-ACTIVE");
+    // sag(추종오차) 계측: 준비자세 유지 중 max |qDes - q_meas| (부하로 인한 처짐).
+    {
+        double sag = 0.0; int jmax = -1;
+        for (int i = 0; i < lastQDes.size(); ++i) {
+            double e = std::fabs(lastQDes(i) - state.q(kin::kBaseQ + i));
+            if (e > sag) { sag = e; jmax = i; }
+        }
+        std::printf(">> after prepare: base_z=%.3f mode=%s | SAG max|qDes-q|=%.4f rad (%.2f deg) @j%d\n",
+                    state.q(2),
+                    controller.mode() == kin::HumanoidController::Mode::Active ? "ACTIVE" : "NOT-ACTIVE",
+                    sag, sag * 57.2958, jmax);
+    }
 
     // --- Space 로 보행 시작(엣지 한 번) + 속도 유지 ---
     double vx = getenv("KIN_VX") ? atof(getenv("KIN_VX")) : 0.04;

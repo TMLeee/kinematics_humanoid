@@ -21,9 +21,32 @@ struct WalkingConfig {
     // 제어 주기
     double controlDt = 0.002;             // [s] (500 Hz)
 
-    // 모터 위치 서보 이득: force = kp*(q_des - q) - kv*qdot
+    // 모터 위치 서보 이득: force = kp*(q_des - q) - kv*qdot  (임피던스형 PD, 전류루프 없음)
     double servoKp = 2000.0;
     double servoKv = 100.0;
+    // 적분 I텀: 목표에 (ki/kp)*∫e 를 더해 중력 부하 sag(정상상태 오차)를 없앤다.
+    //   anti-windup: 적분 위치 오프셋을 ±servoIClampRad 로 클램프.
+    double servoKi        = 100.0;
+    double servoIClampRad = 0.10;
+    // 발목 2축 서보 이득(별도). 0 이면 전역 servoKp/Kv 사용. pitch/roll 축별 독립 설정.
+    //   발목은 접촉/균형 부하가 커서 몸통과 다른 이득이 필요할 때가 많다.
+    double anklePitchKp = 0.0, anklePitchKv = 0.0;
+    double ankleRollKp  = 0.0, ankleRollKv  = 0.0;
+    // 중력보상 피드포워드(qfrc_applied = gravityComp * qfrc_bias). 기본 off(0).
+    //   naive qfrc_bias 는 양발 접촉(닫힌 체인)에서 접촉 반력과 중복돼 과보상되므로
+    //   support-consistent 보상으로 고쳐야 정확. 그때 1 로 켠다.
+    double gravityComp = 0.0;
+    // 속도 피드포워드 계수(0=off, 1=완전보상).
+    //   MuJoCo 위치서보는 force = kp*(ctrl−q) − kv*q̇ 로 q̇_des 항이 없다. +kv·q̇_des 를
+    //   실어 주면 force = kp*e − kv*(q̇ − q̇_des) 가 되어 kv 가 "추종오차 속도"만 감쇠한다.
+    //   이론적으로는 그게 맞지만, **실측은 반대다**(15 s 전진, 전역 kv=300):
+    //       FF off → dx +0.547 m, 안 넘어짐
+    //       FF on  → dx +0.105 m, 전도
+    //   이 로봇은 개루프 키네마틱 보행이라 −kv·q̇ 의 "절대속도 감쇠"가 실제로 진동을
+    //   눌러 주는 역할을 하고 있었고, FF 가 그걸 상쇄해 버린다. 또 q̇_des 를 수치미분해
+    //   쓰므로 지지 교체 tick 의 dq 스파이크가 kv 배로 증폭돼 토크 포화를 일으킨다.
+    //   기능은 남기되 기본 off. 켜려면 q̇_des 평활화와 kv 재튜닝이 함께 필요하다.
+    double servoKvFF = 0.0;
 
     // 보행 패턴(발걸음 생성)
     double stepPeriod         = 1.0;      // 정상 스텝 주기 Tstep [s]
@@ -80,6 +103,23 @@ struct WalkingConfig {
     double lamHand    = 1.0e-2;
     double lamPelvis  = 1.0e-2;
     double lamWaist   = 1.0e-2;
+
+    // ── 발목 어드미턴스(임피던스) ──────────────────────────────────────────
+    //  발 F/T 로 발바닥 CoP 를 읽어 발목 pitch/roll 을 순응시키는 국소 컴플라이언스.
+    //  전역 균형 제어기가 아니다(그건 DCM/캡처포인트 루프의 몫). 발 모서리 들림 방지 +
+    //  착지 충격 흡수가 목적이라 이득은 작게 두고 1차 지연·클램프를 건다.
+    //  실측 감도: dCoP_x/dPitch = -0.75 m/rad, dCoP_y/dRoll = -2.5 m/rad
+    //             → 완전보상 이득은 각각 1.33 / 0.40. 기본값은 그 20~35%.
+    double ankleAdmEnable = 1.0;    // 0 = off
+    double ankleAdmKPitch = 0.05;   // [rad/m] (목표 CoP = 발목 원점)
+    double ankleAdmKRoll  = 0.015;  // [rad/m]
+    double ankleAdmTau    = 0.05;   // 1차 지연 [s]
+    double ankleAdmClamp  = 0.10;   // 보정 한계 [rad]
+    double ankleAdmFtTau  = 0.02;   // F/T 저역통과 [s]
+    double ankleAdmFzMin  = 30.0;   // 접지 판정 하중 [N]
+    //  하중 스케일 기준(체중 절반). 보정량에 |Fz|/이 값 을 곱해 모멘트 기반과 등가로 만든다.
+    //  0 이면 스케일링 off(고정 이득 — 가볍게 실린 발에서 과보정하므로 권장하지 않음).
+    double ankleAdmFzNom  = 469.0;
 
     // 텔레옵 속도 한계/램프
     double vFwdMax  = 0.06;

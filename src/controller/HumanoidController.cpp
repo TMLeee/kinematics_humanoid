@@ -103,6 +103,9 @@ void HumanoidController::startWBC(const RobotState& s) {
                 useAnkleRef() ? "ANKLE" : "SOLE", footRefZ_, comRefZ_, comLipmZ_,
                 std::sqrt(config::gConfig.gravity / comLipmZ_));
 
+    // 발목 어드미턴스 초기화(F/T 필터·보정량 리셋).
+    adm_.init(dt_, admParams_);
+
     // 양팔 유지 목표 = 현재(보행 준비) 자세의 팔 관절각.
     armHold_ = jointsInt_;
 
@@ -197,6 +200,11 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     Side sup = footstep_.supportSide();
     Side sw  = footstep_.swingSide();
     int supId = footId(sup), swId = footId(sw);
+
+    // 1-b) 발목 어드미턴스: 발 F/T → 발바닥 CoP → 발목 pitch/roll 순응.
+    //   FK 가 필요 없다(센서 프레임에서 바로 CoP 를 푼다). IK 와 독립적으로 돌고,
+    //   결과는 아래 7) 에서 출력 지령에만 더한다.
+    if (s.valid && s.ftValid) adm_.update(s.ftLeft, s.ftRight);
 
     // 2) 고정발(fixed-foot) 재앵커링:
     //    base 를 적분하지 않고, 매 tick "지지발 발바닥을 계획 포즈에 고정"하도록 관절각으로부터
@@ -373,10 +381,24 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     //    base 는 다음 tick 에 지지발 고정 조건으로부터 FK 로 재계산 → 드리프트 없음.
     jointsInt_ += dq * dt_;
 
+    // 7) 출력 지령 = IK 결과 + 발목 어드미턴스 보정.
+    //    보정을 jointsInt_ 에 되먹이지 않는다. 되먹이면 다음 tick 의 재앵커링/골반자세
+    //    태스크가 이를 "관절 오차"로 보고 되돌리려 해서 와인드업이 생긴다. 패턴 생성기는
+    //    그대로 두고 출력단에서만 발목을 겹쳐 쓰는 것이 ankle strategy 의 표준 배치다.
+    VectorXd qCmd = jointsInt_;
+    if (adm_.enabled()) {
+        qCmd(L_AnklePitch) += adm_.pitch(Side::Left);
+        qCmd(L_AnkleRoll)  += adm_.roll (Side::Left);
+        qCmd(R_AnklePitch) += adm_.pitch(Side::Right);
+        qCmd(R_AnkleRoll)  += adm_.roll (Side::Right);
+    }
+
     // 관절 한계 클램프(설정된 경우).
     if (qlo_.size() == nJoints_ && qhi_.size() == nJoints_)
-        for (int i = 0; i < nJoints_; ++i)
+        for (int i = 0; i < nJoints_; ++i) {
             jointsInt_(i) = std::max(qlo_(i), std::min(qhi_(i), jointsInt_(i)));
+            qCmd(i)       = std::max(qlo_(i), std::min(qhi_(i), qCmd(i)));
+        }
 
     // 상태 텍스트.
     char buf[256];
@@ -398,6 +420,14 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
         dbg_.comRef   = comRef;
         dbg_.comMeas      = measOk ? comMeas : model_->com();
         dbg_.comMeasValid = measOk;
+        dbg_.admActive    = adm_.enabled();
+        for (int i = 0; i < 2; ++i) {
+            Side sd = (i == 0) ? Side::Left : Side::Right;
+            dbg_.copFoot[i]     = adm_.cop(sd);
+            dbg_.footFz[i]      = adm_.fz(sd);
+            dbg_.ankleDPitch[i] = adm_.pitch(sd);
+            dbg_.ankleDRoll[i]  = adm_.roll(sd);
+        }
         dbg_.zmpFromCom = preview_.zmp();   // LIPM: COM ref 로부터의 ZMP(=C·x)
         dbg_.comRefZ  = comRefZ_;
         dbg_.walking  = footstep_.walking();
@@ -407,7 +437,7 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     }
 
     first_ = false;
-    return jointsInt_;
+    return qCmd;
 }
 
 }  // namespace kin

@@ -13,6 +13,7 @@
 #include <string>
 
 #include "config/WalkingConfig.h"
+#include "controller/AnkleAdmittance.h"
 #include "controller/FootstepGenerator.h"
 #include "controller/PreviewController.h"
 #include "controller/WholeBodyIK.h"
@@ -68,6 +69,10 @@ public:
     //   ankle strategy 를 여기에 제대로 설계해 넣어야 한다(향후 과제).
     void setStabilizer(double alpha) { stabAlpha_ = alpha; }
 
+    // 발목 어드미턴스 파라미터. init 전에 호출.
+    void setAnkleAdmittance(const AnkleAdmittance::Params& p) { admParams_ = p; }
+    const AnkleAdmittance& ankleAdmittance() const { return adm_; }
+
     const std::string& statusText() const { return status_; }
 
     // 그래프/디버그용 내부 신호(제어기가 매 tick 산출).
@@ -80,6 +85,12 @@ public:
         //   → 그래프/마커의 "현재 COM" 은 이 값을 써야 실제 로봇과 같은 것을 보게 된다.
         Eigen::Vector3d comMeas  = Eigen::Vector3d::Zero();
         bool comMeasValid = false;
+        // --- 발목 어드미턴스 진단 ---
+        Eigen::Vector2d copFoot[2] = {Eigen::Vector2d::Zero(), Eigen::Vector2d::Zero()}; // 발 로컬 CoP (L,R)
+        double footFz[2] = {0.0, 0.0};        // 발 수직 하중 [N] (L,R)
+        double ankleDPitch[2] = {0.0, 0.0};   // 발목 보정 [rad] (L,R)
+        double ankleDRoll [2] = {0.0, 0.0};
+        bool   admActive = false;
         Eigen::Vector2d zmpFromCom = Eigen::Vector2d::Zero();// LIPM: COM ref 에서 나오는 ZMP(=C·x)
         double comRefZ = 0.0;                                // COM ref 높이(그래픽 구 표시용)
         bool walking = false;
@@ -164,6 +175,14 @@ private:
     double stabAlpha_ = 0.0;
     Eigen::Vector2d prevComMeas_ = Eigen::Vector2d::Zero();
     bool haveComMeas_ = false;
+
+    // 발목 어드미턴스(F/T 기반 발바닥 CoP 순응).
+    AnkleAdmittance adm_;
+    AnkleAdmittance::Params admParams_{
+        config::gConfig.ankleAdmEnable, config::gConfig.ankleAdmKPitch,
+        config::gConfig.ankleAdmKRoll,  config::gConfig.ankleAdmTau,
+        config::gConfig.ankleAdmClamp,  config::gConfig.ankleAdmFtTau,
+        config::gConfig.ankleAdmFzMin,  config::gConfig.ankleAdmFzNom, 0.0, 0.0};
 
     std::string status_;
     DebugSignals dbg_;

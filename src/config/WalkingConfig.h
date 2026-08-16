@@ -27,9 +27,13 @@ struct WalkingConfig {
 
     // 보행 패턴(발걸음 생성)
     double stepPeriod         = 1.0;      // 정상 스텝 주기 Tstep [s]
-    double stepPeriodStart    = 1.5;      // 시작 첫 스텝 주기 [s]
-    double stepPeriodEnd      = 1.5;      // 정지 마지막 스텝 주기 [s]
-    int    startRampSteps     = 2;        // 시작→정상 램프 스텝 수
+    //  초기/종료 ZMP shift 시간(스텝이 아니라 "체중 이동" 페이즈):
+    //    시작: 이 시간 동안 ZMP 를 양발중앙 → 첫 지지발 로 천천히 이동(스텝 없음).
+    //    종료: 이 시간 동안 ZMP 를 지지발 → 양발중앙 으로 이동 후 정지.
+    //  (개루프 균형 한계상 너무 길면 편측지지 드리프트로 넘어짐 → start≤2, end≤1 권장.)
+    double stepPeriodStart    = 2.0;      // 초기 ZMP shift 시간 [s]
+    double stepPeriodEnd      = 1.0;      // 종료 ZMP shift 시간 [s]
+    int    startRampSteps     = 2;        // (미사용)
     double doubleSupportRatio = 0.4;      // 스텝 내 양발지지 비율
     double stepHeight         = 0.035;    // 스윙발 최고 높이 [m]
     double halfWidth          = kHalfStanceWidth;  // 좌우 발 간격 절반 [m]
@@ -42,6 +46,9 @@ struct WalkingConfig {
     double gravity    = 9.81;             // [m/s^2]
     double previewQe  = 1.0;              // ZMP 추종 오차 가중
     double previewR   = 1.0e-6;           // 입력(jerk) 가중
+    // ZMP 계산 시 COM 관성항(c̈om 계수) 배율. 1.0=이론(질량 소거), 1.3=계산상 30% 무겁게.
+    //   계산 ZMP 와 실제 동작이 다를 때 보정용. C=[1,0,−comMassScale·zc/g].
+    double comMassScale = 1.0;
 
     // CLIK task 비례 이득 (우선순위: 고정발>COM>스윙발>손>골반>허리)
     double kpCom    = 6.0;

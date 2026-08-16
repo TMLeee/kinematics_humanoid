@@ -89,7 +89,8 @@ void HumanoidController::startWBC(const RobotState& s) {
     footstep_.init(left, right, comRefZ_, gait_);
 
     preview_.init(dt_, comRefZ_, config::gConfig.previewSec, config::gConfig.gravity,
-                  config::gConfig.previewQe, config::gConfig.previewR);
+                  config::gConfig.previewQe, config::gConfig.previewR,
+                  config::gConfig.comMassScale);
     preview_.reset(Eigen::Vector2d(com.x(), com.y()));
 
     Matrix3d Rp = model_->bodyRot(idPelvis_);

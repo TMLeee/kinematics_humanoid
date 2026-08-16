@@ -51,6 +51,7 @@ void assignAll(const std::string& s, WalkingConfig& c) {
     D("previewSec", c.previewSec);
     D("gravity", c.gravity);
     D("previewQe", c.previewQe);        D("previewR", c.previewR);
+    D("comMassScale", c.comMassScale);
     D("kpCom", c.kpCom);                D("kpSwing", c.kpSwing);
     D("kpHand", c.kpHand);              D("kpPelvis", c.kpPelvis);
     D("kpWaist", c.kpWaist);
@@ -94,7 +95,8 @@ bool saveToJson(const std::string& path) {
     f << "  \"previewSec\": " << c.previewSec << ",\n";
     f << "  \"gravity\": " << c.gravity << ",\n";
     f << "  \"previewQe\": " << c.previewQe << ",\n";
-    f << "  \"previewR\": " << c.previewR << ",\n\n";
+    f << "  \"previewR\": " << c.previewR << ",\n";
+    f << "  \"comMassScale\": " << c.comMassScale << ",\n\n";
     f << "  \"kpCom\": " << c.kpCom << ",\n";
     f << "  \"kpSwing\": " << c.kpSwing << ",\n";
     f << "  \"kpHand\": " << c.kpHand << ",\n";

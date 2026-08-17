@@ -51,6 +51,8 @@ void assignAll(const std::string& s, WalkingConfig& c) {
     D("halfWidth", c.halfWidth);
     D("maxStridePerStep", c.maxStridePerStep);
     D("maxSwayPerStep", c.maxSwayPerStep);
+    D("minFootClearance", c.minFootClearance);
+    D("sidestepLeadOnly", c.sidestepLeadOnly);
     D("comHeight", c.comHeight);
     D("previewSec", c.previewSec);
     D("gravity", c.gravity);
@@ -64,6 +66,10 @@ void assignAll(const std::string& s, WalkingConfig& c) {
     D("pelvisBodyFrame", c.pelvisBodyFrame);
     D("kpPelvisYaw", c.kpPelvisYaw);
     D("pelvisImuRollPitch", c.pelvisImuRollPitch);
+    D("baseAnchorPlan", c.baseAnchorPlan);
+    D("ankleAdmAtFootTarget", c.ankleAdmAtFootTarget);
+    D("ankleAdmSign", c.ankleAdmSign);
+    D("kpContact", c.kpContact);
     D("kpCom", c.kpCom);                D("kpSwing", c.kpSwing);
     D("kpHand", c.kpHand);              D("kpPelvis", c.kpPelvis);
     D("kpWaist", c.kpWaist);
@@ -114,7 +120,9 @@ bool saveToJson(const std::string& path) {
     f << "  \"stepHeight\": " << c.stepHeight << ",\n";
     f << "  \"halfWidth\": " << c.halfWidth << ",\n";
     f << "  \"maxStridePerStep\": " << c.maxStridePerStep << ",\n";
-    f << "  \"maxSwayPerStep\": " << c.maxSwayPerStep << ",\n\n";
+    f << "  \"maxSwayPerStep\": " << c.maxSwayPerStep << ",\n";
+    f << "  \"minFootClearance\": " << c.minFootClearance << ",\n";
+    f << "  \"sidestepLeadOnly\": " << c.sidestepLeadOnly << ",\n\n";
     f << "  \"comHeight\": " << c.comHeight << ",\n";
     f << "  \"previewSec\": " << c.previewSec << ",\n";
     f << "  \"gravity\": " << c.gravity << ",\n";
@@ -131,6 +139,10 @@ bool saveToJson(const std::string& path) {
     f << "  \"pelvisBodyFrame\": " << c.pelvisBodyFrame << ",\n";
     f << "  \"kpPelvisYaw\": " << c.kpPelvisYaw << ",\n";
     f << "  \"pelvisImuRollPitch\": " << c.pelvisImuRollPitch << ",\n\n";
+    f << "  \"baseAnchorPlan\": " << c.baseAnchorPlan << ",\n";
+    f << "  \"ankleAdmAtFootTarget\": " << c.ankleAdmAtFootTarget << ",\n";
+    f << "  \"ankleAdmSign\": " << c.ankleAdmSign << ",\n\n";
+    f << "  \"kpContact\": " << c.kpContact << ",\n";
     f << "  \"kpCom\": " << c.kpCom << ",\n";
     f << "  \"kpSwing\": " << c.kpSwing << ",\n";
     f << "  \"kpHand\": " << c.kpHand << ",\n";

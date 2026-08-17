@@ -31,6 +31,13 @@ int main(int argc, char** argv) {
     if (getenv("KIN_PELBODY"))  kin::config::gConfig.pelvisBodyFrame = atof(getenv("KIN_PELBODY"));
     if (getenv("KIN_PELIMU"))   kin::config::gConfig.pelvisImuRollPitch = atof(getenv("KIN_PELIMU"));
     if (getenv("KIN_KPPELYAW")) kin::config::gConfig.kpPelvisYaw    = atof(getenv("KIN_KPPELYAW"));
+    // base 추정 anchor / 접촉 servo / 어드미턴스 적용 지점 A/B
+    if (getenv("KIN_ANCHORPLAN")) kin::config::gConfig.baseAnchorPlan = atof(getenv("KIN_ANCHORPLAN"));
+    if (getenv("KIN_KPCON"))      kin::config::gConfig.kpContact      = atof(getenv("KIN_KPCON"));
+    if (getenv("KIN_ADMTGT"))     kin::config::gConfig.ankleAdmAtFootTarget = atof(getenv("KIN_ADMTGT"));
+    if (getenv("KIN_ADMSIGN"))    kin::config::gConfig.ankleAdmSign   = atof(getenv("KIN_ADMSIGN"));
+    if (getenv("KIN_FOOTCLR"))    kin::config::gConfig.minFootClearance = atof(getenv("KIN_FOOTCLR"));
+    if (getenv("KIN_SIDELEAD"))   kin::config::gConfig.sidestepLeadOnly = atof(getenv("KIN_SIDELEAD"));
     // 발목 어드미턴스 A/B (admParams_ 도 컨트롤러 생성 시점에 gConfig 에서 복사된다).
     if (getenv("KIN_ADM"))    kin::config::gConfig.ankleAdmEnable = atof(getenv("KIN_ADM"));
     if (getenv("KIN_ADMKP"))  kin::config::gConfig.ankleAdmKPitch = atof(getenv("KIN_ADMKP"));
@@ -142,6 +149,11 @@ int main(int argc, char** argv) {
         Acc pelRoll, pelPitch;   // 진짜 world 골반 roll/pitch [deg]
         Acc slipSS, slipDS;      // 접지 발 지령 속도 [m/s] (SS 구간 / DS 구간)
         Acc qStep;               // tick 당 관절 지령 변화 [rad]
+        Acc conErr;              // 접촉 pose servo 오차
+        Acc anchorPlan;          // 추정 anchor − 계획 포즈 [m]
+        double footLatMin = 1e9; // 실측 두 발 중심 최소 횡방향 간격 [m] (겹침 = 0.130 미만)
+        double planLatMin = 1e9; // 계획 기준 최소 횡방향 간격 [m] — 전도와 무관한 판정
+        double planLatMax = 0.0; // 계획 기준 최대(=최대 벌림/straddle) [m]
         double dsDevMax = 0.0, slipAngMax = 0.0, ikResMax = 0.0;
         double ikComMax = 0.0, ikSwMax = 0.0, ikConMax = 0.0;   // task 속도 차 [m/s]
         double sigMinMin = 1e9, sigMinSum = 0.0;
@@ -203,6 +215,25 @@ int main(int argc, char** argv) {
                 M.slipDS.add(d.slipLin);
             }
             M.slipAngMax = std::max(M.slipAngMax, d.slipAng);
+            M.conErr.add(d.contactPoseErr);
+            M.anchorPlan.add(d.anchorVsPlan);
+            {   // 두 발 중심의 횡방향 간격(지지발 프레임 기준) — 게걸음 겹침 진단.
+                //   |lat| 이 0.130(발 반폭×2) 아래면 발이 물리적으로 겹친다.
+                model.setState(state.q, kin::VectorXd::Zero(model.nv()));
+                model.updateKinematics();
+                const kin::Vector3d pl = model.bodyPos(model.bodyId(kin::BodyNames::LFoot));
+                const kin::Vector3d pr = model.bodyPos(model.bodyId(kin::BodyNames::RFoot));
+                const kin::Matrix3d Rs = model.bodyRot(model.bodyId(
+                    d.supportSide == 0 ? kin::BodyNames::LFoot : kin::BodyNames::RFoot));
+                const double yaw = std::atan2(Rs(1, 0), Rs(0, 0));
+                const kin::Vector3d dv = (d.supportSide == 0) ? (pr - pl) : (pl - pr);
+                const double lat = std::fabs(-std::sin(yaw) * dv.x() + std::cos(yaw) * dv.y());
+                M.footLatMin = std::min(M.footLatMin, lat);
+                if (d.walking) {
+                    M.planLatMin = std::min(M.planLatMin, d.planFootLat);
+                    M.planLatMax = std::max(M.planLatMax, d.planFootLat);
+                }
+            }
             M.dsDevMax   = std::max(M.dsDevMax, d.dsFootDev);
             M.ikResMax   = std::max(M.ikResMax, d.ikResidual);
             M.ikComMax   = std::max(M.ikComMax, d.ikComDiff);
@@ -362,6 +393,10 @@ int main(int argc, char** argv) {
                     " | trueSS=%ld/%ld tick\n",
                     M.zmpFootX, M.zmpFootY, M.ssTrue, M.ssPlan);
         std::printf("M| smooth   qStep rms=%.5f max=%.5f rad\n", M.qStep.rms(), M.qStep.mx);
+        std::printf("M| base     conPoseErr rms=%.2e max=%.2e | anchorVsPlan rms=%.5f max=%.5f m\n",
+                    M.conErr.rms(), M.conErr.mx, M.anchorPlan.rms(), M.anchorPlan.mx);
+        std::printf("M| footclr  plan min=%.4f max=%.4f | actual min=%.4f m (겹침 0.130, 공칭 0.205)\n",
+                    M.planLatMin, M.planLatMax, M.footLatMin);
     }
 
     // --- Space 로 정지(엣지 한 번) → graceful stop, 5초 유지 ---

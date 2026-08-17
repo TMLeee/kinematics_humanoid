@@ -14,6 +14,7 @@
 
 #include "config/WalkingConfig.h"
 #include "controller/AnkleAdmittance.h"
+#include "controller/BaseEstimator.h"
 #include "controller/FootstepGenerator.h"
 #include "controller/PreviewController.h"
 #include "controller/WholeBodyIK.h"
@@ -31,6 +32,9 @@ public:
         double kpHand   = config::gConfig.kpHand;
         double kpPelvis = config::gConfig.kpPelvis;
         double kpWaist  = config::gConfig.kpWaist;
+        // 접촉 pose servo 이득. 지지발은 정상 상태 오차가 0 이라 무해하고, DS 반대발의
+        // 위치레벨 정합과 어드미턴스 순응 실행 속도를 정한다.
+        double kpContact = config::gConfig.kpContact;
         double lamSupport = config::gConfig.lamSupport;
         double lamCom     = config::gConfig.lamCom;
         double lamSwing   = config::gConfig.lamSwing;
@@ -128,6 +132,10 @@ public:
         double ikResidual = 0.0;     // ikCompare=1 일 때 두 정식화 dq 의 상대잔차
         //  두 정식화의 차이가 "달성되는 task 속도" 에서 오는가, 아니면 여유 자유도 배분
         //  (null space)에서만 오는가를 가른다. 아래 세 값이 0 에 가까우면 후자다.
+        // base 추정 진단
+        double anchorVsPlan = 0.0;   // [m] 추정 지지발 anchor 와 계획 포즈의 수평 거리
+        double planFootLat = 0.0;    // [m] **계획** 두 발 중심 횡방향 간격(겹침 = 0.130 미만)
+        double contactPoseErr = 0.0; // [m,rad 혼합 norm] 접촉 pose servo 오차
         double ikComDiff = 0.0;      // [m/s] 두 해가 만드는 COM 속도의 차
         double ikSwingDiff = 0.0;    // [m/s] 스윙발 병진속도의 차
         double ikContactDiff = 0.0;  // [m/s] 지지발 병진속도의 차
@@ -137,10 +145,11 @@ public:
 private:
     void startWBC(const RobotState& s);   // 준비 자세에서 WBC(footstep/preview/IK) 초기화·시작
 
-    // "지지발이 지면에 고정되어 있다"고 가정하고, 주어진 관절각으로 전신 COM 을 푼다.
-    //   floating-base 추정에 의존하지 않으므로 실제 로봇에서도 그대로 성립한다.
+    // "지지발이 anchor 에 고정되어 있다"고 가정하고, 주어진 관절각으로 전신 COM 을 푼다.
+    //   base 추정(BaseEstimator)과 같은 anchor·tilt 를 쓰므로 프레임이 항상 일치한다.
     //   주의: 내부 모델 상태를 덮어쓴다(호출 후 반드시 다시 setState 할 것).
-    Vector3d comWithPlantedFoot(const VectorXd& qJoints, int supId);
+    Vector3d comWithPlantedFoot(const VectorXd& qJoints, int supId, Side sup,
+                                const Matrix3d& tilt);
 
     RobotModel* model_ = nullptr;
     double dt_ = 0.002;
@@ -177,8 +186,12 @@ private:
     double   footRefZ_ = 0.0;                     // 발 평지 접지 시 기준점의 world z
     Vector3d soleOffset_{0, 0, kSoleOffsetZ};     // (발바닥 — 진단/외부용)
 
-    // 내부(피드포워드) 모델 상태: 지지발을 정확히 고정한 채 base 를 지지발 제약으로
-    // 적분한다. 측정값에 앵커링하지 않으므로 키네마틱 드리프트가 없다.
+    // 가상 base pose 추정기. "접지발은 world 에 고정" 가정으로 anchor 를 들고 있고,
+    // 상위 레벨(IMU/SLAM) 보정 seam 을 제공한다. BaseEstimator.h 참조.
+    BaseEstimator est_;
+    bool wasContact_[2] = {false, false};   // 발별 직전 tick 접지 여부(anchor 전이 검출)
+
+    // 내부(피드포워드) 모델 상태: est_ 의 anchor 로부터 매 tick FK 로 역산된다.
     Vector3d   basePos_ = Vector3d::Zero();
     Quaterniond baseQuat_ = Quaterniond::Identity();
     VectorXd   jointsInt_;           // 내부 관절 지령(nJoints, 적분)

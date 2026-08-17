@@ -33,6 +33,11 @@ public:
         double halfWidth  = config::gConfig.halfWidth;
         double maxStride  = config::gConfig.maxStridePerStep;
         double maxSway    = config::gConfig.maxSwayPerStep;
+        // 두 발 중심의 최소 횡방향 간격 [m]. 발 반폭 0.065 × 2 = 0.130 이 "닿는" 값이므로
+        // 여유를 둔다. 0 이면 안전망 off. 정상 보행(간격 2×0.1025=0.205)에는 영향 없다.
+        double minFootClearance = config::gConfig.minFootClearance;
+        // 게걸음 좌우 이동분을 진행 방향 쪽 발 스텝에만 몰아 줄지(발 겹침 방지).
+        double sidestepLeadOnly = config::gConfig.sidestepLeadOnly;
     };
 
     void init(const Pose2& leftFoot, const Pose2& rightFoot, double comZ, const Params& p);

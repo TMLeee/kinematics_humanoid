@@ -23,6 +23,9 @@
   "halfWidth": 0.1025,
   "maxStridePerStep": 0.20,
   "maxSwayPerStep": 0.12,
+  "_footclr": "게걸음 발 겹침. 계획 최소 간격 = 2*halfWidth - vy*T (실측 0.205-vy). 발 반폭x2=0.130 아래면 겹친다. minFootClearance 안전망으로 막는다. sidestepLeadOnly=1 도 겹침을 없애지만 벌림(straddle)이 0.225->0.325 로 두 배가 되어 vy>=0.06 에서 전도 → off.",
+  "minFootClearance": 0.145,
+  "sidestepLeadOnly": 0.0,
 
   "comHeight": 0.0,
   "previewSec": 1.6,
@@ -44,6 +47,10 @@
   "kpPelvisYaw": 0.0,
   "pelvisImuRollPitch": 0.0,
 
+  "_base": "base pose 추정. baseAnchorPlan=0 은 접지 순간의 발 pose 를 anchor 로 물려받는 kinematic odometry(지지 교체 시 base 점프 없음, 계획 대비 0.14mm 이내). 1 은 매 tick 계획 포즈로 스냅(기존). IMU/SLAM 보정은 BaseEstimator::applyCorrection 에 붙인다.",
+  "baseAnchorPlan": 0.0,
+  "kpContact": 20.0,
+
   "kpCom": 6.0,
   "kpSwing": 6.0,
   "kpHand": 6.0,
@@ -58,7 +65,10 @@
   "lamWaist": 1.0e-2,
 
   "_ankleAdm": "발목 어드미턴스(F/T 기반 발바닥 CoP 순응). ankleAdmEnable=0 이면 off.",
-  "ankleAdmEnable": 0.0,
+  "_adm": "발목 어드미턴스. ankleAdmAtFootTarget=1 은 순응 회전을 발 목표 자세/anchor 에 곱해 IK 가 다리 전체로 실행한다(부호 -1). 출력단 관절 덧셈(=0)은 재앵커링/골반 태스크와 싸워 전도했다. 실측: 지지발 대비 ZMP 여유 -8~-27%, vx<=0.06 에서 전도 없음.",
+  "ankleAdmAtFootTarget": 1.0,
+  "ankleAdmSign": -1.0,
+  "ankleAdmEnable": 1.0,
   "ankleAdmKPitch": 0.05,
   "ankleAdmKRoll": 0.015,
   "ankleAdmTau": 0.05,

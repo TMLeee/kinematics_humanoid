@@ -117,11 +117,21 @@ void HumanoidController::startWBC(const RobotState& s) {
     first_ = true;
 }
 
-// 지지발 기준점을 계획 포즈(평지, yaw 만)에 고정한 채 관절각으로 base 를 역산하고 COM 을 푼다.
-Vector3d HumanoidController::comWithPlantedFoot(const VectorXd& qJoints, int supId) {
-    const Pose2 sp = footstep_.supportFootPose();
-    const Matrix3d R_pl = rotZ(sp.yaw);
-    const Vector3d p_pl(sp.x, sp.y, footRefZ_);
+// 지지발 기준점을 anchor(= BaseEstimator 가 들고 있는 "발은 여기 고정" 포즈)에 맞춘 채
+// 주어진 관절각으로 base 를 역산하고 COM 을 푼다. anchor 가 아직 없으면 계획 포즈를 쓴다.
+//   base 추정과 **같은 anchor** 를 쓰므로 측정 COM 과 내부 모델의 프레임이 항상 일치한다.
+Vector3d HumanoidController::comWithPlantedFoot(const VectorXd& qJoints, int supId, Side sup,
+                                               const Matrix3d& tilt) {
+    Matrix3d R_pl;
+    Vector3d p_pl;
+    if (est_.valid(sup)) {
+        p_pl = est_.anchorPos(sup);
+        R_pl = est_.anchorRot(sup) * tilt;
+    } else {
+        const Pose2 sp = footstep_.supportFootPose();
+        R_pl = rotZ(sp.yaw);
+        p_pl = Vector3d(sp.x, sp.y, footRefZ_);
+    }
 
     // 1) base = 단위 로 두고 지지발 기준점의 base-상대 포즈를 얻는다.
     qInt_.head(3).setZero(); qInt_(3) = 1; qInt_(4) = 0; qInt_(5) = 0; qInt_(6) = 0;
@@ -202,30 +212,84 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     int supId = footId(sup), swId = footId(sw);
 
     // 1-b) 발목 어드미턴스: 발 F/T → 발바닥 CoP → 발목 pitch/roll 순응.
-    //   FK 가 필요 없다(센서 프레임에서 바로 CoP 를 푼다). IK 와 독립적으로 돌고,
-    //   결과는 아래 7) 에서 출력 지령에만 더한다.
+    //   FK 가 필요 없다(센서 프레임에서 바로 CoP 를 푼다). 결과의 **적용 지점**은
+    //   출력단 관절 덧셈이 아니라 아래 2)/5) 의 "발 목표 자세" 다(ankleAdmAtFootTarget).
     if (s.valid && s.ftValid) adm_.update(s.ftLeft, s.ftRight);
 
-    // 2) 고정발(fixed-foot) 재앵커링:
-    //    base 를 적분하지 않고, 매 tick "지지발 발바닥을 계획 포즈에 고정"하도록 관절각으로부터
-    //    FK 로 역산한다. 이렇게 하면 내부 모델이 정확히 "지지발이 지면에 고정된 매니퓰레이터"가
-    //    되어(지지발이 루트) 적분 2차 드리프트가 사라진다.
+    // 접지 상태: SS = 지지발만, DS/정지 = 양발. 접지 발마다 anchor 를 관리한다.
+    const bool bothDownNow = (footstep_.phase() != GaitPhase::SingleSupport);
+    auto inContact = [&](Side sd) { return sd == sup || bothDownNow; };
+
+    // 어드미턴스 순응 회전(발 로컬): pitch = y축, roll = x축.
+    //   접지발은 anchor 자세에, 스윙발은 착지 목표 자세에 곱한다. 두 곳에 같은 값을 쓰므로
+    //   내부 모델·base 추정·골반 태스크가 모두 같은 "발이 δ 만큼 기울었다"를 보게 되고,
+    //   출력단 덧셈 방식에서 생기던 싸움(재앵커링 평발 가정 vs 골반 수평 유지)이 사라진다.
+    const bool   admAtTarget = config::gConfig.ankleAdmAtFootTarget > 0.5;
+    const double admSign     = config::gConfig.ankleAdmSign;
+    auto admTilt = [&](Side sd) -> Matrix3d {
+        if (!adm_.enabled() || !admAtTarget) return Matrix3d::Identity();
+        return rotY(admSign * adm_.pitch(sd)) * rotX(admSign * adm_.roll(sd));
+    };
+
+    // 2) base pose 추정 — "접지발은 world 에 고정" 가정(BaseEstimator).
+    //    (a) 발이 공중→접지로 바뀌는 순간 그 발의 anchor 를 **직전 추정**에서 물려받는다.
+    //    (b) 매 tick 지지발 anchor 를 만족하는 base pose 를 FK 로 역산한다.
+    //    baseAnchorPlan=1 이면 anchor 를 매 tick 계획 포즈로 재설정한다(기존 동작, A/B 용).
+    const bool anchorFromPlan = config::gConfig.baseAnchorPlan > 0.5;
     {
-        Pose2 sp = footstep_.supportFootPose();
-        Vector3d p_pl(sp.x, sp.y, footRefZ_);      // 지지발 기준점(발목이면 z=+0.1585)
-        Matrix3d R_pl = rotZ(sp.yaw);
-        // base=단위 로 두고 지지발 기준점의 base-상대 포즈를 구한다.
-        qInt_.head(3).setZero(); qInt_(3) = 1; qInt_(4) = 0; qInt_(5) = 0; qInt_(6) = 0;
-        qInt_.segment(kBaseQ, nJoints_) = qBasis;
-        model_->setState(qInt_, VectorXd::Zero(model_->nv()));
-        model_->updateKinematics();
-        Vector3d p_bf = model_->bodyPos(supId, footRefOffset_);   // 기준점(base 프레임)
-        Matrix3d R_bf = model_->bodyRot(supId);
-        // foot_world = base ⊕ foot_base = (p_pl, R_pl) 를 만족하는 base:
-        Matrix3d R_base = R_pl * R_bf.transpose();
-        Vector3d p_base = p_pl - R_base * p_bf;
+        auto setModelState = [&](const Vector3d& p, const Quaterniond& q, const VectorXd& qj) {
+            qInt_.head(3) = p;
+            qInt_(3) = q.w(); qInt_(4) = q.x(); qInt_(5) = q.y(); qInt_(6) = q.z();
+            qInt_.segment(kBaseQ, nJoints_) = qj;
+            model_->setState(qInt_, VectorXd::Zero(model_->nv()));
+            model_->updateKinematics();
+        };
+
+        // (a) 지지발 anchor 확보. 없으면(첫 tick) 또는 plan 모드면 계획 포즈로 설정한다.
+        //     지지 교체 시에는 그 발이 착지할 때 잡아 둔 anchor 를 그대로 쓴다 → base 연속.
+        if (anchorFromPlan || !est_.valid(sup)) {
+            const Pose2 sp = footstep_.supportFootPose();
+            est_.setAnchor(sup, Vector3d(sp.x, sp.y, footRefZ_), rotZ(sp.yaw), true, footRefZ_);
+        }
+
+        // (b) base=단위 FK → 지지발 기준점의 base-상대 pose → base pose.
+        setModelState(Vector3d::Zero(), Quaterniond::Identity(), qBasis);
+        const Vector3d p_bf = model_->bodyPos(supId, footRefOffset_);
+        const Matrix3d R_bf = model_->bodyRot(supId);
+        // ── 여기가 IMU/SLAM 보정 지점이다 ──
+        //   est_.applyCorrection(sup, correction, p_bf, R_bf);
+        //   (BaseEstimator::applyCorrection 주석 참조. 지금은 호출자 없음.)
+        Vector3d p_base; Matrix3d R_base;
+        est_.solveBase(sup, p_bf, R_bf, admTilt(sup), p_base, R_base);
         basePos_  = p_base;
         baseQuat_ = Quaterniond(R_base).normalized();
+
+        // (c) 반대발이 "공중 → 접지" 로 바뀌면 그 발의 anchor 를 **이번 tick 의 base** 에서
+        //     읽어 잡는다. base 를 먼저 푼 뒤에 잡아야 접촉 task 의 초기 오차가 정확히 0 이
+        //     되어 착지 tick 에 과도항이 생기지 않는다(직전 base 로 잡으면 한 tick 만큼 어긋난다).
+        setModelState(basePos_, baseQuat_, qBasis);
+        for (Side sd : {Side::Left, Side::Right}) {
+            const bool now = inContact(sd);
+            const bool need = now && (!wasContact_[(int)sd] || !est_.valid(sd));
+            wasContact_[(int)sd] = now;
+            if (!need || sd == sup) continue;   // 지지발은 (a) 에서 처리됨
+            est_.setAnchor(sd, model_->bodyPos(footId(sd), footRefOffset_),
+                           model_->bodyRot(footId(sd)), true, footRefZ_);
+        }
+        // 진단: **계획** 기준 두 발 중심의 횡방향 간격. 전도 여부와 무관하게 계획 자체가
+        //   발을 겹치게 놓는지 판정한다(실측 발 위치로 재면 전도 후 자세가 섞여 원인/결과를
+        //   가릴 수 없다). 발 반폭×2 = 0.130 아래면 계획이 이미 겹친다.
+        {
+            const Pose2 spp = footstep_.supportFootPose();
+            const FootPose stt = footstep_.swingFootTarget();
+            const double cy = std::cos(spp.yaw), sy = std::sin(spp.yaw);
+            const double dxw = stt.x - spp.x, dyw = stt.y - spp.y;
+            dbg_.planFootLat = std::fabs(-sy * dxw + cy * dyw);
+        }
+        // 진단: 추정 지지발 anchor 가 계획 포즈에서 얼마나 벗어났는가(누적 오도메트리 오차).
+        const Pose2 sp = footstep_.supportFootPose();
+        dbg_.anchorVsPlan =
+            (est_.anchorPos(sup).head(2) - Eigen::Vector2d(sp.x, sp.y)).norm();
     }
 
     // 2-b) COM "측정값": 지지발이 지면에 고정되어 있다는 가정 하에 **측정 관절각**으로 푼다.
@@ -237,7 +301,8 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     //    그래프/뷰어 마커의 "현재 COM" 도 이 값을 쓰므로, comMeasPlanted 노브와 무관하게
     //    측정이 유효하면 항상 계산한다(노브는 "COM task 오차에 쓸지"만 정한다).
     const bool measOk = s.valid && s.q.size() == model_->nq();
-    Vector3d comMeas = measOk ? comWithPlantedFoot(qMeas, supId) : Vector3d::Zero();
+    Vector3d comMeas = measOk ? comWithPlantedFoot(qMeas, supId, sup, admTilt(sup))
+                              : Vector3d::Zero();
     const bool haveMeas = measOk && (config::gConfig.comMeasPlanted > 0.5);
 
     // 3) 내부 모델을 (재앵커된 base, 계산 기준 관절각) 로 세팅 → 발/자코비안 기준.
@@ -313,6 +378,34 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     MatrixXd Jsup = model_->bodyJacobian(supId, footRefOffset_);          // 6×nv
     MatrixXd S = WholeBodyIK::baseSlave(Jsup, nJoints_, g_.lamSupport);   // reduced 전용
 
+    // 접촉 구속의 자코비안과 목표 속도. 순서는 [지지발; 반대발] 로 고정하고, 단일지지면
+    // 위 6행만 쓴다 → **지지발이 바뀌어도 스택 구조가 그대로다.**
+    //   목표는 anchor 로의 6D pose servo 다(속도 0 이 아니라). 정상 상태에서는 지지발
+    //   오차가 정확히 0 이다(base 추정이 발을 anchor 에 놓으므로) → servo 항이 무해하다.
+    //   값이 생기는 경우는 (1) DS 에서 반대발이 자기 anchor 에서 어긋남 → 위치레벨 폐루프
+    //   정합, (2) 어드미턴스가 anchor 자세를 기울임 → 순응이 다리 전체로 실행됨.
+    MatrixXd JconAll(12, nv);
+    VectorXd xdotConAll(12);
+    {
+        const Side sides[2] = {sup, sw};
+        for (int i = 0; i < 2; ++i) {
+            const Side sd = sides[i];
+            const int  fid = footId(sd);
+            JconAll.middleRows(6 * i, 6) = model_->bodyJacobian(fid, footRefOffset_);
+            VectorXd e = VectorXd::Zero(6);
+            if (est_.valid(sd)) {
+                e.head(3) = est_.anchorPos(sd) - model_->bodyPos(fid, footRefOffset_);
+                e.tail(3) = orientationError(est_.anchorRot(sd) * admTilt(sd),
+                                             model_->bodyRot(fid));
+            }
+            xdotConAll.segment(6 * i, 6) = g_.kpContact * e;
+        }
+        // 진단은 **실제로 접지 중인 행만** 본다. 스윙발 행은 anchor 가 지난 착지점이라
+        // 스윙 폭만큼 큰 값이 나오는데, 그 행은 접촉 task 에 들어가지 않는다.
+        const int nrDiag = bothDownNow ? 12 : 6;
+        dbg_.contactPoseErr = xdotConAll.head(nrDiag).norm() / std::max(1e-9, g_.kpContact);
+    }
+
     VectorXd dqFull = VectorXd::Zero(nv);       // 실제 사용하는 해의 nv 벡터(접촉 잔차 진단용)
     VectorXd dqFullOther = VectorXd::Zero(nv);  // ikCompare 용 반대 정식화의 해
 
@@ -339,10 +432,9 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
         //   역할은 오직 하위 태스크가 쓸 null-space 투영자 N 을 만드는 것이다.
         MatrixXd Jcon;
         if (fb) {
-            Jcon.resize(two ? 12 : 6, nx);
-            Jcon.topRows(6) = Jsup;
-            if (two) Jcon.bottomRows(6) = model_->bodyJacobian(swId, footRefOffset_);
-            tasks.push_back({Jcon, VectorXd::Zero(Jcon.rows()), lamCon, "Contact"});
+            const int nr = two ? 12 : 6;
+            Jcon = JconAll.topRows(nr);
+            tasks.push_back({Jcon, VectorXd(xdotConAll.head(nr)), lamCon, "Contact"});
         }
 
         // --- (1) COM ---
@@ -373,7 +465,8 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
             Matrix3d Rcur = model_->bodyRot(swId);
             // footstep 의 swing z 는 "지면 위 높이"(0..stepHeight) → 기준점 높이를 더해 world z.
             Vector3d pdes(swT.x, swT.y, footRefZ_ + swT.z);
-            Matrix3d Rdes = rotZ(swT.yaw);
+            // 스윙발 목표 자세에도 같은 순응 회전을 곱한다(착지 전 지면 정렬).
+            Matrix3d Rdes = rotZ(swT.yaw) * admTilt(sw);
             VectorXd xdot(6);
             xdot.head(3) = swFfPos + g_.kpSwing * (pdes - pcur);
             xdot.tail(3) = swFfOri + g_.kpSwing * orientationError(Rdes, Rcur);
@@ -557,12 +650,11 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
     //    base 는 다음 tick 에 지지발 고정 조건으로부터 FK 로 재계산 → 드리프트 없음.
     jointsInt_ += dq * dt_;
 
-    // 7) 출력 지령 = IK 결과 + 발목 어드미턴스 보정.
-    //    보정을 jointsInt_ 에 되먹이지 않는다. 되먹이면 다음 tick 의 재앵커링/골반자세
-    //    태스크가 이를 "관절 오차"로 보고 되돌리려 해서 와인드업이 생긴다. 패턴 생성기는
-    //    그대로 두고 출력단에서만 발목을 겹쳐 쓰는 것이 ankle strategy 의 표준 배치다.
+    // 7) 출력 지령. ankleAdmAtFootTarget=1 이면 어드미턴스가 이미 위(발 목표 자세/anchor)에
+    //    반영되어 IK 를 통해 다리 전체로 실행되었으므로, 출력단에서 다시 더하지 않는다.
+    //    0 이면 기존 방식: 출력단에서 발목 관절에만 덧셈(모델은 이를 모른다).
     VectorXd qCmd = jointsInt_;
-    if (adm_.enabled()) {
+    if (adm_.enabled() && !admAtTarget) {
         qCmd(L_AnklePitch) += adm_.pitch(Side::Left);
         qCmd(L_AnkleRoll)  += adm_.roll (Side::Left);
         qCmd(R_AnklePitch) += adm_.pitch(Side::Right);

@@ -40,8 +40,30 @@ void FootstepGenerator::appendSupport(Side side) {
     double c = std::cos(anchor_tyaw_), s = std::sin(anchor_tyaw_);
     double dx = clampd(cmd_.vx * T, -p_.maxStride, p_.maxStride);
     double dy = clampd(cmd_.vy * T, -p_.maxSway,   p_.maxSway);
-    anchor_tx_ += c * dx - s * dy;
-    anchor_ty_ += s * dx + c * dy;
+
+    // ── 게걸음 발 겹침 방지 ──────────────────────────────────────────────────
+    // 좌우 이동 중에는 매 스텝 앵커가 dy 만큼 옆으로 가고 두 발이 그 앵커에서 ±halfWidth
+    // 로 놓인다. 그래서 **진행 방향의 반대발**이 착지할 때 두 발 중심 간격이
+    // 2·halfWidth − dy 로 줄어든다(halfWidth=0.1025, 발 반폭 0.065 → dy>0.075 면 겹침).
+    //
+    // 고치는 방법: 좌우 이동분을 **진행 방향 쪽 발의 스텝에만 몰아서** 준다.
+    //   진행쪽 발이 2·dy 만큼 크게 벌려 나가고, 반대발은 옆으로 움직이지 않고
+    //   (앵커가 그대로이므로) 새 진행쪽 발에서 정확히 2·halfWidth 떨어진 자리에 놓인다.
+    //   → 최소 간격이 항상 2·halfWidth 로 유지되고, 사이클당 이동량(2·dy)은 그대로다.
+    // 전후(dx) 는 두 발이 좌우로 이미 떨어져 있어 겹치지 않으므로 손대지 않는다.
+    const double kVyEps = 1e-4;
+    const bool leadSide = (dy > kVyEps  && side == Side::Left)
+                       || (dy < -kVyEps && side == Side::Right);
+    const bool trailSide = (dy > kVyEps  && side == Side::Right)
+                        || (dy < -kVyEps && side == Side::Left);
+    double dyStep = dy;
+    if (p_.sidestepLeadOnly > 0.5) {
+        if (leadSide)  dyStep = clampd(2.0 * dy, -p_.maxSway, p_.maxSway);
+        if (trailSide) dyStep = 0.0;
+    }
+
+    anchor_tx_ += c * dx - s * dyStep;
+    anchor_ty_ += s * dx + c * dyStep;
 
     double ly = (side == Side::Left ? p_.halfWidth : -p_.halfWidth);
     Support sp;
@@ -50,6 +72,23 @@ void FootstepGenerator::appendSupport(Side side) {
     sp.fx = anchor_tx_ - std::sin(anchor_tyaw_) * ly;
     sp.fy = anchor_ty_ + std::cos(anchor_tyaw_) * ly;
     sp.fyaw = anchor_tyaw_;
+
+    // 안전망: 바로 앞 스텝(이 스텝의 지지발이 될 발)과의 **횡방향** 간격이 최소치보다
+    // 좁으면 밖으로 밀어낸다. 회전 보행처럼 위 보정으로 안 잡히는 조합까지 막는다.
+    if (!plan_.empty() && p_.minFootClearance > 0.0) {
+        const Support& prev = plan_.back();
+        const double cy = std::cos(prev.fyaw), sy = std::sin(prev.fyaw);
+        // 이전 발 프레임에서 본 이번 발의 횡방향 좌표.
+        const double dxw = sp.fx - prev.fx, dyw = sp.fy - prev.fy;
+        double lat = -sy * dxw + cy * dyw;                  // prev 발 기준 y
+        const double want = (side == Side::Left) ? p_.minFootClearance : -p_.minFootClearance;
+        if ((side == Side::Left && lat < want) || (side == Side::Right && lat > want)) {
+            const double push = want - lat;                 // prev 발 프레임에서 밀 양
+            sp.fx += -sy * push;
+            sp.fy +=  cy * push;
+        }
+    }
+
     sp.t0 = anchor_t1_;
     sp.t1 = anchor_t1_ + T;
     anchor_t1_ = sp.t1;

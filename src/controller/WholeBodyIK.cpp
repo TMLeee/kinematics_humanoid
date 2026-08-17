@@ -17,14 +17,25 @@ MatrixXd WholeBodyIK::reduce(const MatrixXd& Jtask, const MatrixXd& S) {
     return Jjoint + Jbase * S;                        // m×nJoints (support-consistent)
 }
 
-VectorXd WholeBodyIK::solve(const std::vector<Task>& tasks, int nJoints) {
+VectorXd WholeBodyIK::solve(const std::vector<Task>& tasks, int nJoints,
+                            std::vector<TaskDiag>* diag) {
     VectorXd dq = VectorXd::Zero(nJoints);
     MatrixXd N  = MatrixXd::Identity(nJoints, nJoints);   // null-space projector
+    if (diag) { diag->clear(); diag->reserve(tasks.size()); }
 
     for (const Task& t : tasks) {
-        if (t.J.rows() == 0) continue;
+        if (t.J.rows() == 0) { if (diag) diag->push_back(TaskDiag{}); continue; }
         const MatrixXd& Ji = t.J;                 // m×nJoints
         MatrixXd JiN = Ji * N;                    // 현재 null space 로 투영
+        if (diag) {
+            Eigen::JacobiSVD<MatrixXd> svd(JiN);
+            const VectorXd sv = svd.singularValues();
+            TaskDiag d;
+            d.rows = static_cast<int>(Ji.rows());
+            d.sigMax = sv(0);
+            d.sigMin = sv(sv.size() - 1);
+            diag->push_back(d);
+        }
         MatrixXd JiN_pinv = dampedPinv(JiN, t.lambda);   // nJoints×m
         // 상위 task 결과(dq)를 방해하지 않으면서 이 task 오차를 최소화.
         dq += JiN_pinv * (t.xdot - Ji * dq);

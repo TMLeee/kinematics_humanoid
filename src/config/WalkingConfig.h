@@ -62,6 +62,18 @@ struct WalkingConfig {
     double halfWidth          = kHalfStanceWidth;  // 좌우 발 간격 절반 [m]
     double maxStridePerStep   = 0.20;     // 스텝당 최대 전후 이동 [m]
     double maxSwayPerStep     = 0.12;     // 스텝당 최대 좌우 이동 [m]
+    // 두 발 중심의 최소 횡방향 간격 [m]. 게걸음/회전에서 발이 겹치는 것을 막는 안전망.
+    //   발 반폭 0.065 → 0.130 이 "닿는" 값. 정상 보행 간격은 2×0.1025 = 0.205 라 무영향.
+    double minFootClearance   = 0.145;
+    // 게걸음 좌우 이동분을 진행 방향 쪽 발의 스텝에만 몰아 준다(1=on).
+    //   목적: off 면 매 스텝 앵커가 dy 씩 이동해 **진행 반대쪽 발**이 착지할 때 두 발 중심
+    //   간격이 2·halfWidth − dy 로 줄어든다(실측 정확히 0.205 − vy·T → vy>0.075 에서 겹침).
+    //   on 이면 최소 간격이 항상 2·halfWidth = 0.205 로 유지된다.
+    //   **그런데 실측은 on 이 더 나쁘다 → 기본 off.** 진행쪽 발이 2·dy 를 한 번에 벌리므로
+    //   최대 벌림(straddle)이 0.225 → 0.325 m 로 두 배가 되고, vy≥0.06 에서 복제쌍 2/2 전도.
+    //   겹침은 minFootClearance 안전망으로 막는 것이 안정성 손실 없이 해결된다
+    //   (vy=0.08: 계획 간격 0.125 → 0.145, 복제쌍 2/2 생존).
+    double sidestepLeadOnly   = 0.0;
 
     // COM / preview controller
     double comHeight  = 0.0;              // COM 목표 높이 [m] (0 = 초기 자세 높이)
@@ -89,8 +101,72 @@ struct WalkingConfig {
     //   바꿔야 한다. A/B 용으로 노브를 남겨 둔다.
     double comMeasPlanted = 1.0;
 
+    // ── IK 정식화(formulation) ────────────────────────────────────────────
+    //  0 = reduced   : 최적화 변수 = 관절 33. 지지발 구속을 baseSlave()/reduce() 로 소거.
+    //  1 = floating  : 최적화 변수 = nv 39(가상 base 6 포함). 지지발 구속을 최상위 task 로.
+    //  단일지지에서 두 형태는 **달성 task 속도가 기계정밀도로 동일**하다(ikCompare=1 로
+    //  상시 검증: λ→0 에서 COM 속도차 9e-15 m/s). 남는 차이는 여유 자유도 배분뿐이다
+    //  (최소노름이 재는 노름이 다름: reduced ‖dq_joint‖ vs floating ‖[dq_base;dq_joint]‖).
+    //  floating 만이 양발지지에서 두 발을 동시에 구속할 수 있다(12행 > base 6 → 소거 불가).
+    //  0 으로 두면 기존 reduced 동작으로 정확히 되돌아간다(A/B 용).
+    double floatingBase = 1.0;
+    //  양발지지/정지 구간에서 양발을 모두 접촉 구속할지. floatingBase=1 에서만 유효.
+    //  0 이면 반대발은 (기존처럼) 하위 우선순위 스윙 task 로만 잡힌다 = 접촉이 soft.
+    //  실측: DS 접촉 잔차 1.13e-3 → 3.5e-6 m/s (약 320배). 대신 DS 구간 COM 제어 권한이
+    //  절반으로 줄어든다(sigComMin 0.128 → 0.072) — 이는 "양발이 땅에 있다" 는 물리를
+    //  정직하게 반영한 결과이지 성능 저하가 아니다.
+    double dsBothFeet = 1.0;
+    //  접촉 구속 task 의 DLS 감쇠. 0 이면 lamSupport 를 그대로 쓴다.
+    //  1e-6 이면 접촉이 사실상 완전 구속이 된다(지령 발속도 ~1e-12 m/s). Jsup 조건수가
+    //  2.4 수준이라 이렇게 작게 잡아도 안전하다(양발 12행에서도 확인).
+    double lamContact = 1.0e-6;
+    //  1 = 매 tick 두 정식화를 모두 풀어 dq 상대잔차를 계측(동치성 회귀 검증용, 2배 느림).
+    double ikCompare = 0.0;
+
+    // ── 골반(pelvis) 자세 task 좌표 ────────────────────────────────────────
+    //  0 = world(=계획) 프레임 각자코비안/오차 (기존).
+    //  1 = 골반 바디 프레임: J_body = R_pel^T·J_ang,  e_body = R_pel^T·e.
+    //      등방 DLS + 3행 전부 사용 시 dq 는 world 형태와 **정확히 동일**하다(회전 불변).
+    //      의미가 생기는 건 (a) roll/pitch 오차를 IMU(진짜 world)에서 받을 때,
+    //      (b) 축별 이득을 다르게 줄 때. J_body 는 내부 world 프레임 선택과 무관하므로
+    //      계획 프레임 자코비안과 진짜 world 의 IMU 오차를 섞어도 정합이 맞는다.
+    //  검증: 15 s 보행 7500 tick 전체에서 world↔body 의 dq 상대차 max 1.0e-15
+    //  (ikCompare=2). 즉 지금 이 값을 1 로 켜는 것 자체는 거동을 바꾸지 않는다 —
+    //  IMU/축별이득으로 가는 구조적 준비다.
+    double pelvisBodyFrame = 1.0;
+    //  골반 yaw 전용 이득(0 = kpPelvis 와 동일). pelvisBodyFrame=1 에서만 분리 적용.
+    double kpPelvisYaw = 0.0;
+    //  1 = 골반 roll/pitch 오차를 **측정 base 자세**(IMU 등가)에서 취한다. yaw 는 계획 유지.
+    //      pelvisBodyFrame=1 필요. 실측 기울기를 균형에 되먹이는 첫 경로.
+    //  **실측은 해롭다 → 기본 off.** 9 조건 스윕에서 전도 2/9 → 3/9 로 늘고(vx=0.08 에서
+    //  A/C 는 버티는데 이것만 전도), pitch rms 0.47° → 0.74°, ZMP x 오차 rms 2 배,
+    //  내부 COM 오차 rms +78%. roll rms 만 0.46° → 0.31° 로 좋아진다.
+    //  이유: 순수 P 자세 피드백이라 위상지연이 그대로 LIPM 에 에너지를 넣는다. 제대로 쓰려면
+    //  DCM/캡처포인트 또는 ankle strategy 형태로 감쇠를 포함해 설계해야 한다.
+    double pelvisImuRollPitch = 0.0;
+
+    // ── base pose 추정 (BaseEstimator) ────────────────────────────────────
+    //  0 = odometry : 접지 순간의 발 world pose 를 anchor 로 물려받는다(기본).
+    //      지지 교체 때 base 가 점프하지 않고, 스윙발 목표가 절대 계획 포즈라 오차가
+    //      누적되지 않는다. IMU/SLAM 보정을 붙일 자리가 anchor 다.
+    //  1 = plan     : 매 tick anchor 를 계획 포즈로 스냅(기존 동작, A/B 용).
+    double baseAnchorPlan = 0.0;
+
+    // ── 발목 어드미턴스 적용 지점 ─────────────────────────────────────────
+    //  1 = 발 목표 자세/anchor 에 순응 회전을 곱한다(기본). 내부 모델·base 추정·골반
+    //      태스크가 모두 같은 "발이 δ 기울었다" 를 보므로 서로 싸우지 않고, IK 가 순응을
+    //      다리 전체로 실행한다.
+    //  0 = 기존 방식: 출력단에서 발목 관절에만 덧셈(모델이 이를 모른다 → 재앵커링·골반
+    //      태스크와 충돌. 실측으로 전도한 방식).
+    double ankleAdmAtFootTarget = 1.0;
+    //  순응 회전의 부호. 관절 덧셈과 발 자세 회전은 몸통에 반대로 작용한다 → **−1 이 맞다**
+    //  (실측: +1 은 5/5 조건 전도, −1 은 5/5 전도 없음).
+    double ankleAdmSign = -1.0;
+
     // CLIK task 비례 이득 (우선순위: 고정발>COM>스윙발>손>골반>허리)
     double kpCom    = 6.0;
+    // 접촉 pose servo 이득(지지발 anchor 유지 / DS 반대발 위치레벨 정합 / 순응 실행).
+    double kpContact = 20.0;
     double kpSwing  = 12.0;
     double kpHand   = 4.0;
     double kpPelvis = 3.0;
@@ -110,6 +186,13 @@ struct WalkingConfig {
     //  착지 충격 흡수가 목적이라 이득은 작게 두고 1차 지연·클램프를 건다.
     //  실측 감도: dCoP_x/dPitch = -0.75 m/rad, dCoP_y/dRoll = -2.5 m/rad
     //             → 완전보상 이득은 각각 1.33 / 0.40. 기본값은 그 20~35%.
+    //  적용 지점을 발 목표 자세로 옮긴 뒤(ankleAdmAtFootTarget=1, ankleAdmSign=-1) **기본 on**.
+    //  실측(15 s, 복제쌍 2회): 지지발 대비 ZMP 여유 최대치가
+    //    vx=0.04  0.138~0.145 → 0.095~0.107 m (−27%)
+    //    vx=0.06  0.133       → 0.117~0.126 m (−8%)
+    //    Tstep=0.7 0.407~0.435 → 0.351~0.354 m (−16%)
+    //  주의: vFwdMax(0.06)를 넘는 vx=0.08 에서는 한계적이다(복제쌍 1/2 전도). 그 영역까지
+    //  쓰려면 ankleAdmKPitch 를 0.025 로 낮춘다(이득은 사라지고 안정성만 회복).
     double ankleAdmEnable = 1.0;    // 0 = off
     double ankleAdmKPitch = 0.05;   // [rad/m] (목표 CoP = 발목 원점)
     double ankleAdmKRoll  = 0.015;  // [rad/m]

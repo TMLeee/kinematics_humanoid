@@ -14,6 +14,7 @@
 
 #include "config/WalkingConfig.h"
 #include "controller/AnkleAdmittance.h"
+#include "controller/BaseEstimator.h"
 #include "controller/FootstepGenerator.h"
 #include "controller/PreviewController.h"
 #include "controller/WholeBodyIK.h"
@@ -31,6 +32,9 @@ public:
         double kpHand   = config::gConfig.kpHand;
         double kpPelvis = config::gConfig.kpPelvis;
         double kpWaist  = config::gConfig.kpWaist;
+        // 접촉 pose servo 이득. 지지발은 정상 상태 오차가 0 이라 무해하고, DS 반대발의
+        // 위치레벨 정합과 어드미턴스 순응 실행 속도를 정한다.
+        double kpContact = config::gConfig.kpContact;
         double lamSupport = config::gConfig.lamSupport;
         double lamCom     = config::gConfig.lamCom;
         double lamSwing   = config::gConfig.lamSwing;
@@ -107,16 +111,45 @@ public:
         bool   supportSwitched = false;
         double swingZ = 0.0;        // 스윙발 지령 높이 [m]
         int    phase = 0;           // 0=stand,1=DS,2=SS
+
+        // --- IK 정식화(floating base) 진단 ---
+        //  접촉 잔차: **물리적으로 접지 중인 모든 발**(SS=지지발, DS/정지=양발)의 지령 속도.
+        //  솔버가 구속했는지와 무관하게 같은 잣대로 재므로 두 정식화를 직접 비교할 수 있다.
+        //  0 이 아니면 그만큼 "지령이 접촉과 모순"이다(발이 미끄러지거나 들려야 함).
+        double slipLin = 0.0;        // [m/s] 접지 발 병진속도 최대
+        double slipAng = 0.0;        // [rad/s] 접지 발 각속도 최대
+        double slipSwingLin = 0.0;   // [m/s] DS 중 반대발(비지지발)만의 병진속도
+        double dsFootDev = 0.0;      // [m] DS 중 반대발이 계획 착지 포즈에서 벗어난 거리
+        //  task 가 상위 우선순위(접촉 구속 포함)의 null space 안에서 실제로 쓸 수 있는
+        //  방향의 세기 = Ji·N 의 특이값. "제어 권한" 지표이며 카오스에 흔들리지 않는다.
+        double sigComMax = 0.0;      // COM task 최대 특이값
+        double sigComMin = 0.0;      //   〃 최소 (COM 제어 권한의 병목)
+        double sigPelMax = 0.0;      // 골반 자세 task 최대 특이값
+        double sigPelMin = 0.0;      //   〃 최소 (골반 자세 제어 권한의 병목)
+        double sigComRawMax = 0.0;   // 접촉 구속 **전** 전신 COM 자코비안(3×nv) 최대 특이값
+        double sigComRawMin = 0.0;   //   〃 최소 (base 병진열 = I₃ 라 1 근처가 나온다)
+        int    nContactRows = 6;     // 솔버가 실제로 구속한 접촉 행 수 (6 또는 12)
+        double ikResidual = 0.0;     // ikCompare=1 일 때 두 정식화 dq 의 상대잔차
+        //  두 정식화의 차이가 "달성되는 task 속도" 에서 오는가, 아니면 여유 자유도 배분
+        //  (null space)에서만 오는가를 가른다. 아래 세 값이 0 에 가까우면 후자다.
+        // base 추정 진단
+        double anchorVsPlan = 0.0;   // [m] 추정 지지발 anchor 와 계획 포즈의 수평 거리
+        double planFootLat = 0.0;    // [m] **계획** 두 발 중심 횡방향 간격(겹침 = 0.130 미만)
+        double contactPoseErr = 0.0; // [m,rad 혼합 norm] 접촉 pose servo 오차
+        double ikComDiff = 0.0;      // [m/s] 두 해가 만드는 COM 속도의 차
+        double ikSwingDiff = 0.0;    // [m/s] 스윙발 병진속도의 차
+        double ikContactDiff = 0.0;  // [m/s] 지지발 병진속도의 차
     };
     const DebugSignals& debug() const { return dbg_; }
 
 private:
     void startWBC(const RobotState& s);   // 준비 자세에서 WBC(footstep/preview/IK) 초기화·시작
 
-    // "지지발이 지면에 고정되어 있다"고 가정하고, 주어진 관절각으로 전신 COM 을 푼다.
-    //   floating-base 추정에 의존하지 않으므로 실제 로봇에서도 그대로 성립한다.
+    // "지지발이 anchor 에 고정되어 있다"고 가정하고, 주어진 관절각으로 전신 COM 을 푼다.
+    //   base 추정(BaseEstimator)과 같은 anchor·tilt 를 쓰므로 프레임이 항상 일치한다.
     //   주의: 내부 모델 상태를 덮어쓴다(호출 후 반드시 다시 setState 할 것).
-    Vector3d comWithPlantedFoot(const VectorXd& qJoints, int supId);
+    Vector3d comWithPlantedFoot(const VectorXd& qJoints, int supId, Side sup,
+                                const Matrix3d& tilt);
 
     RobotModel* model_ = nullptr;
     double dt_ = 0.002;
@@ -153,8 +186,12 @@ private:
     double   footRefZ_ = 0.0;                     // 발 평지 접지 시 기준점의 world z
     Vector3d soleOffset_{0, 0, kSoleOffsetZ};     // (발바닥 — 진단/외부용)
 
-    // 내부(피드포워드) 모델 상태: 지지발을 정확히 고정한 채 base 를 지지발 제약으로
-    // 적분한다. 측정값에 앵커링하지 않으므로 키네마틱 드리프트가 없다.
+    // 가상 base pose 추정기. "접지발은 world 에 고정" 가정으로 anchor 를 들고 있고,
+    // 상위 레벨(IMU/SLAM) 보정 seam 을 제공한다. BaseEstimator.h 참조.
+    BaseEstimator est_;
+    bool wasContact_[2] = {false, false};   // 발별 직전 tick 접지 여부(anchor 전이 검출)
+
+    // 내부(피드포워드) 모델 상태: est_ 의 anchor 로부터 매 tick FK 로 역산된다.
     Vector3d   basePos_ = Vector3d::Zero();
     Quaterniond baseQuat_ = Quaterniond::Identity();
     VectorXd   jointsInt_;           // 내부 관절 지령(nJoints, 적분)

@@ -67,6 +67,13 @@ public:
     //   쓰는데 zmpAt() 는 support_pose_(지지발)를 돌려주어 y 로 halfWidth(=102.5 mm)
     //   만큼 어긋났다. 그래프의 가짜 ZMP 오차이자, 이 값을 목표로 쓰는 쪽에서는
     //   실제 제어 오차였다. 두 경로를 하나로 맞춘다.
+    // 토르소(골반) 진행방향 yaw — 스텝 경계에서 끊기지 않게 시간 보간한 값.
+    //   지지발 yaw(supportFootPose().yaw)는 한 지지구간 내내 상수라 지지 교체 때
+    //   vyaw·Tstep 만큼 계단식으로 점프한다. 그걸 골반 목표로 쓰면 골반이 스텝 단위로
+    //   툭툭 돌아간다. 대신 "접지 중인 두 발의 중간 yaw"를 구간 내에서 선형 보간하면
+    //   구간 경계에서 값과 기울기가 모두 이어져(등속 vyaw) 부드럽게 회전한다.
+    double torsoYaw() const;
+
     void currentZmp(double& zx, double& zy) const {
         if (!walking_ || plan_.empty()) {
             zx = 0.5 * (left_foot_.x + right_foot_.x);

@@ -112,6 +112,33 @@ void FootstepGenerator::zmpAt(double t, double& zx, double& zy) const {
     zy = plan_[i].fy;
 }
 
+// 토르소 yaw: 접지 중인 두 발의 중간 yaw 를 지지구간 안에서 선형 보간.
+//   지지구간 cur 의 시작에는 (cur-1, cur) 두 발이, 끝에는 (cur, cur+1) 두 발이 접지한다.
+//     시작값 = (tyaw[cur-1] + tyaw[cur]) / 2
+//     끝값   = (tyaw[cur]   + tyaw[cur+1]) / 2
+//   연속 앵커가 vyaw·Tstep 씩 차이나므로 구간마다 기울기가 같아 전체가 등속 회전이 되고,
+//   구간 경계에서 값도 이어진다(끝값[cur] == 시작값[cur+1]).
+double FootstepGenerator::torsoYaw() const {
+    if (!walking_ || plan_.empty())
+        return 0.5 * (left_foot_.yaw + right_foot_.yaw);
+
+    // 초기 ZMP shift 중에는 아직 스텝이 없다 → 시작 앵커 yaw 유지.
+    if (t_ < T_start_) return plan_.front().tyaw;
+
+    int cur = currentIndex();
+    if (cur < 1) cur = 1;
+    const int prev = cur - 1;
+    const int next = std::min<int>(cur + 1, (int)plan_.size() - 1);
+
+    const double y0 = 0.5 * (plan_[prev].tyaw + plan_[cur].tyaw);
+    const double y1 = 0.5 * (plan_[cur].tyaw  + plan_[next].tyaw);
+
+    const double T = plan_[cur].t1 - plan_[cur].t0;
+    if (T <= 1e-9) return y1;
+    const double f = clampd((t_ - plan_[cur].t0) / T, 0.0, 1.0);
+    return y0 + (y1 - y0) * f;
+}
+
 void FootstepGenerator::update(double dt, const VelocityCommand& cmd) {
     support_switched_ = false;
 

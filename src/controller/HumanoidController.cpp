@@ -339,7 +339,9 @@ VectorXd HumanoidController::update(const RobotState& s, const VelocityCommand& 
 
     // --- (4) 골반 자세 : 수평 유지 + 진행방향 yaw ---
     {
-        double headingYaw = footstep_.supportFootPose().yaw;
+        // 지지발 yaw 는 지지구간마다 계단식으로 점프하므로 골반이 스텝 단위로 툭툭 돈다.
+        // 시간 보간된 토르소 yaw 를 쓴다(등속 회전, 경계 연속).
+        double headingYaw = footstep_.torsoYaw();
         Matrix3d Rpel = model_->bodyRot(idPelvis_);
         MatrixXd Jr = WholeBodyIK::reduce(model_->bodyJacobian(idPelvis_), S);
         MatrixXd Jori = Jr.bottomRows(3);   // angular

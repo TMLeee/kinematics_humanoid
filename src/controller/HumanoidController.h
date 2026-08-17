@@ -107,6 +107,30 @@ public:
         bool   supportSwitched = false;
         double swingZ = 0.0;        // 스윙발 지령 높이 [m]
         int    phase = 0;           // 0=stand,1=DS,2=SS
+
+        // --- IK 정식화(floating base) 진단 ---
+        //  접촉 잔차: **물리적으로 접지 중인 모든 발**(SS=지지발, DS/정지=양발)의 지령 속도.
+        //  솔버가 구속했는지와 무관하게 같은 잣대로 재므로 두 정식화를 직접 비교할 수 있다.
+        //  0 이 아니면 그만큼 "지령이 접촉과 모순"이다(발이 미끄러지거나 들려야 함).
+        double slipLin = 0.0;        // [m/s] 접지 발 병진속도 최대
+        double slipAng = 0.0;        // [rad/s] 접지 발 각속도 최대
+        double slipSwingLin = 0.0;   // [m/s] DS 중 반대발(비지지발)만의 병진속도
+        double dsFootDev = 0.0;      // [m] DS 중 반대발이 계획 착지 포즈에서 벗어난 거리
+        //  task 가 상위 우선순위(접촉 구속 포함)의 null space 안에서 실제로 쓸 수 있는
+        //  방향의 세기 = Ji·N 의 특이값. "제어 권한" 지표이며 카오스에 흔들리지 않는다.
+        double sigComMax = 0.0;      // COM task 최대 특이값
+        double sigComMin = 0.0;      //   〃 최소 (COM 제어 권한의 병목)
+        double sigPelMax = 0.0;      // 골반 자세 task 최대 특이값
+        double sigPelMin = 0.0;      //   〃 최소 (골반 자세 제어 권한의 병목)
+        double sigComRawMax = 0.0;   // 접촉 구속 **전** 전신 COM 자코비안(3×nv) 최대 특이값
+        double sigComRawMin = 0.0;   //   〃 최소 (base 병진열 = I₃ 라 1 근처가 나온다)
+        int    nContactRows = 6;     // 솔버가 실제로 구속한 접촉 행 수 (6 또는 12)
+        double ikResidual = 0.0;     // ikCompare=1 일 때 두 정식화 dq 의 상대잔차
+        //  두 정식화의 차이가 "달성되는 task 속도" 에서 오는가, 아니면 여유 자유도 배분
+        //  (null space)에서만 오는가를 가른다. 아래 세 값이 0 에 가까우면 후자다.
+        double ikComDiff = 0.0;      // [m/s] 두 해가 만드는 COM 속도의 차
+        double ikSwingDiff = 0.0;    // [m/s] 스윙발 병진속도의 차
+        double ikContactDiff = 0.0;  // [m/s] 지지발 병진속도의 차
     };
     const DebugSignals& debug() const { return dbg_; }
 

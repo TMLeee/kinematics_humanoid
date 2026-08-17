@@ -19,6 +19,38 @@ int main(int argc, char** argv) {
     if (getenv("KIN_KPCOM")) kin::config::gConfig.kpCom = atof(getenv("KIN_KPCOM"));
     if (getenv("KIN_CLOOP")) kin::config::gConfig.closedLoop = atof(getenv("KIN_CLOOP"));
 
+    // ── IK 정식화(floating base) / 골반 좌표 A/B 노브 ──────────────────────
+    //  lamSupport 는 HumanoidController::Gains 의 기본값으로 **생성 시점에** 복사되므로
+    //  반드시 컨트롤러 생성 전에 덮어써야 한다(여기). 나머지 노브는 update() 에서 매 tick
+    //  gConfig 를 읽으므로 시점이 자유롭지만, 한곳에 모아 두는 편이 혼동이 없다.
+    if (getenv("KIN_FB"))       kin::config::gConfig.floatingBase   = atof(getenv("KIN_FB"));
+    if (getenv("KIN_DSBOTH"))   kin::config::gConfig.dsBothFeet     = atof(getenv("KIN_DSBOTH"));
+    if (getenv("KIN_LAMCON"))   kin::config::gConfig.lamContact     = atof(getenv("KIN_LAMCON"));
+    if (getenv("KIN_LAMSUP"))   kin::config::gConfig.lamSupport     = atof(getenv("KIN_LAMSUP"));
+    if (getenv("KIN_IKCMP"))    kin::config::gConfig.ikCompare      = atof(getenv("KIN_IKCMP"));
+    if (getenv("KIN_PELBODY"))  kin::config::gConfig.pelvisBodyFrame = atof(getenv("KIN_PELBODY"));
+    if (getenv("KIN_PELIMU"))   kin::config::gConfig.pelvisImuRollPitch = atof(getenv("KIN_PELIMU"));
+    if (getenv("KIN_KPPELYAW")) kin::config::gConfig.kpPelvisYaw    = atof(getenv("KIN_KPPELYAW"));
+    // 발목 어드미턴스 A/B (admParams_ 도 컨트롤러 생성 시점에 gConfig 에서 복사된다).
+    if (getenv("KIN_ADM"))    kin::config::gConfig.ankleAdmEnable = atof(getenv("KIN_ADM"));
+    if (getenv("KIN_ADMKP"))  kin::config::gConfig.ankleAdmKPitch = atof(getenv("KIN_ADMKP"));
+    if (getenv("KIN_ADMKR"))  kin::config::gConfig.ankleAdmKRoll  = atof(getenv("KIN_ADMKR"));
+    // KIN_LAMALL: 모든 DLS 감쇠를 한 값으로. 동치성 검증 전용.
+    //   두 정식화의 차이는 **감쇠가 재는 노름**이다: reduced 는 ‖dq_joint‖ 을,
+    //   floating 은 ‖[dq_base; dq_joint]‖ 을 벌점한다. λ→0 이면 그 차이도 0 이 되어야 한다.
+    if (getenv("KIN_LAMALL")) {
+        const double L = atof(getenv("KIN_LAMALL"));
+        auto& c = kin::config::gConfig;
+        c.lamSupport = c.lamCom = c.lamSwing = c.lamHand = c.lamPelvis = c.lamWaist = L;
+        c.lamContact = L;
+    }
+    std::printf("IK: floatingBase=%.0f dsBothFeet=%.0f lamSup=%.1e lamCon=%.1e ikCompare=%.0f"
+                " | pelvis: bodyFrame=%.0f imuRollPitch=%.0f kpYaw=%.1f\n",
+                kin::config::gConfig.floatingBase, kin::config::gConfig.dsBothFeet,
+                kin::config::gConfig.lamSupport, kin::config::gConfig.lamContact,
+                kin::config::gConfig.ikCompare, kin::config::gConfig.pelvisBodyFrame,
+                kin::config::gConfig.pelvisImuRollPitch, kin::config::gConfig.kpPelvisYaw);
+
     kin::SimIO io(model_path, /*with_viewer=*/false);
     // 모터 서보 이득 오버라이드(KIN_KP / KIN_KV) — init 전에 설정.
     {
@@ -92,6 +124,38 @@ int main(int argc, char** argv) {
                 state.q(0), state.q(1), state.q(2),
                 model.com().x(), model.com().y(), model.com().z());
 
+    // ── 정량 계측(A/B 비교용) ────────────────────────────────────────────────
+    //  두 정식화를 같은 잣대로 비교하기 위한 누적기. WALK 구간만 집계한다.
+    //  "측정" 신호는 전부 시뮬레이터 ground truth (제어기가 믿는 값이 아니라 실제 물리).
+    struct Acc {
+        double s2 = 0.0, mx = 0.0;
+        long n = 0;
+        void add(double v) { s2 += v * v; mx = std::max(mx, std::fabs(v)); ++n; }
+        double rms() const { return n ? std::sqrt(s2 / (double)n) : 0.0; }
+    };
+    struct Metrics {
+        Acc zmpEx, zmpEy;        // 측정 ZMP − 계획 ZMP(계단형) [m]
+        Acc zmpLx, zmpLy;        // 측정 ZMP − LIPM 함의 ZMP(preview COM ref 에서 나오는 값) [m]
+                                 //   계단형 레퍼런스와 달리 연속이라 추종 품질 지표로 적합.
+        Acc comEx, comEy;        // 측정 COM − preview COM ref [m]
+        Acc comEint;             // 제어기 내부 COM 오차 [m]
+        Acc pelRoll, pelPitch;   // 진짜 world 골반 roll/pitch [deg]
+        Acc slipSS, slipDS;      // 접지 발 지령 속도 [m/s] (SS 구간 / DS 구간)
+        Acc qStep;               // tick 당 관절 지령 변화 [rad]
+        double dsDevMax = 0.0, slipAngMax = 0.0, ikResMax = 0.0;
+        double ikComMax = 0.0, ikSwMax = 0.0, ikConMax = 0.0;   // task 속도 차 [m/s]
+        double sigMinMin = 1e9, sigMinSum = 0.0;
+        double sigRawMinMin = 1e9, sigRawMaxMax = 0.0;   // 접촉 구속 전 COM 자코비안
+        double sigPelMinMin = 1e9, sigPelSum = 0.0;      // 골반 task 제어 권한
+        // SS / DS 를 나눠 평균: 양발 구속의 효과는 DS 구간에만 나타난다.
+        double sigComSsSum = 0.0, sigComDsSum = 0.0, sigPelSsSum = 0.0, sigPelDsSum = 0.0;
+        long   sigSsN = 0, sigDsN = 0;
+        long   sigN = 0;
+        double zmpFootX = 0.0, zmpFootY = 0.0;   // 진짜 SS 중 |측정 ZMP − 지지발 중심| 최대 [m]
+        long   ssPlan = 0, ssTrue = 0;           // 계획상 SS tick / 실제로 한 발만 접지한 tick
+    } M;
+    bool collect = false;
+
     bool ok = true;
     kin::VectorXd lastQDes;
     auto tick = [&](kin::VelocityCommand cmd, int k, const char* tag) {
@@ -101,6 +165,60 @@ int main(int argc, char** argv) {
         for (int i = 0; i < qDes.size(); ++i)
             if (std::isnan(qDes(i)) || std::isinf(qDes(i))) { ok = false; }
         io.writeJointTargets(qDes);
+
+        if (collect) {
+            const auto& d = controller.debug();
+            Eigen::Vector2d cm = io.measuredCom();
+            Eigen::Vector2d zm;
+            const bool zv = io.measuredZmp(zm);
+            if (zv) {
+                M.zmpEx.add(zm.x() - d.zmpRef.x());
+                M.zmpEy.add(zm.y() - d.zmpRef.y());
+                M.zmpLx.add(zm.x() - d.zmpFromCom.x());
+                M.zmpLy.add(zm.y() - d.zmpFromCom.y());
+            }
+            M.comEx.add(cm.x() - d.comRef.x());
+            M.comEy.add(cm.y() - d.comRef.y());
+            M.comEint.add(d.errCom);
+            {   // 진짜 world 골반 자세(계획 프레임이 아님) = 측정 base quat.
+                kin::Quaterniond qp(state.q(3), state.q(4), state.q(5), state.q(6));
+                qp.normalize();
+                const kin::Vector3d rpy = kin::quatToRpy(qp);
+                M.pelRoll.add(rpy(0) * 57.2957795);
+                M.pelPitch.add(rpy(1) * 57.2957795);
+            }
+            if (d.phase == 2) {           // SS
+                M.slipSS.add(d.slipLin);
+                // ZMP 지지다각형 여유는 "정말로 한 발만 접지" 인 tick 에서만 의미가 있다.
+                //   계획상 SS 라도 스윙발이 아직 하중을 받고 있으면 ZMP 가 두 발 사이에
+                //   있을 수 있으므로(물리적으로 정상) 그 tick 은 제외한다.
+                const double fzSwing = (d.supportSide == 0) ? state.ftRight(2) : state.ftLeft(2);
+                if (zv && std::fabs(fzSwing) < 30.0) {
+                    M.zmpFootX = std::max(M.zmpFootX, std::fabs(zm.x() - d.footstep.x()));
+                    M.zmpFootY = std::max(M.zmpFootY, std::fabs(zm.y() - d.footstep.y()));
+                    ++M.ssTrue;
+                }
+                ++M.ssPlan;
+            } else {                      // DS / stand
+                M.slipDS.add(d.slipLin);
+            }
+            M.slipAngMax = std::max(M.slipAngMax, d.slipAng);
+            M.dsDevMax   = std::max(M.dsDevMax, d.dsFootDev);
+            M.ikResMax   = std::max(M.ikResMax, d.ikResidual);
+            M.ikComMax   = std::max(M.ikComMax, d.ikComDiff);
+            M.ikSwMax    = std::max(M.ikSwMax, d.ikSwingDiff);
+            M.ikConMax   = std::max(M.ikConMax, d.ikContactDiff);
+            M.qStep.add(d.qStep);
+            M.sigMinMin  = std::min(M.sigMinMin, d.sigComMin);
+            M.sigMinSum += d.sigComMin;
+            M.sigRawMinMin = std::min(M.sigRawMinMin, d.sigComRawMin);
+            M.sigRawMaxMax = std::max(M.sigRawMaxMax, d.sigComRawMax);
+            M.sigPelMinMin = std::min(M.sigPelMinMin, d.sigPelMin);
+            M.sigPelSum   += d.sigPelMin;
+            if (d.phase == 2) { M.sigComSsSum += d.sigComMin; M.sigPelSsSum += d.sigPelMin; ++M.sigSsN; }
+            else              { M.sigComDsSum += d.sigComMin; M.sigPelDsSum += d.sigPelMin; ++M.sigDsN; }
+            ++M.sigN;
+        }
         // 점프 진단: 한 tick 관절 지령 변화(qStep)가 임계 이상이면 유발 task 와 함께 출력.
         if (getenv("KIN_JUMP")) {
             const auto& d = controller.debug();
@@ -195,15 +313,56 @@ int main(int argc, char** argv) {
     double vy = getenv("KIN_VY") ? atof(getenv("KIN_VY")) : 0.0;
     double vyaw = getenv("KIN_VYAW") ? atof(getenv("KIN_VYAW")) : 0.0;
     double bx_walk0 = state.q(0);
+    collect = true;
     for (int k = 0; k < nWalk && io.running(); ++k) {
         kin::VelocityCommand c; c.vx = vx; c.vy = vy; c.vyaw = vyaw;
         if (k == 0) c.spaceEdge = true;   // 보행 시작 토글
         tick(c, k, "WALK");
     }
+    collect = false;
     io.read(state);
     std::printf(">> after walk: base=(%.3f,%.3f,%.3f) dx=%.3f, fell=%s, NaN=%s\n",
                 state.q(0), state.q(1), state.q(2), state.q(0) - bx_walk0,
                 state.q(2) < 0.6 ? "YES" : "no", ok ? "no" : "YES");
+
+    // ── 계측 요약 ──────────────────────────────────────────────────────────
+    //  전부 WALK 구간 집계. 접두어 M| 로 grep/diff 하기 쉽게.
+    {
+        const bool fell = state.q(2) < 0.6;
+        std::printf("M| gait     dx=%+.4f fell=%d nan=%d walksec=%.1f\n",
+                    state.q(0) - bx_walk0, fell ? 1 : 0, ok ? 0 : 1, nWalk * dt);
+        std::printf("M| zmpErr   rms=(%.5f,%.5f) max=(%.5f,%.5f)   [측정ZMP − 계획ZMP, m]\n",
+                    M.zmpEx.rms(), M.zmpEy.rms(), M.zmpEx.mx, M.zmpEy.mx);
+        std::printf("M| comErr   rms=(%.5f,%.5f) max=(%.5f,%.5f)   [측정COM − previewCOM, m]\n",
+                    M.comEx.rms(), M.comEy.rms(), M.comEx.mx, M.comEy.mx);
+        std::printf("M| comInt   rms=%.5f max=%.5f                 [제어기 내부 COM 오차, m]\n",
+                    M.comEint.rms(), M.comEint.mx);
+        std::printf("M| pelvis   rms=(%.4f,%.4f) max=(%.4f,%.4f)   [진짜 world roll,pitch, deg]\n",
+                    M.pelRoll.rms(), M.pelPitch.rms(), M.pelRoll.mx, M.pelPitch.mx);
+        std::printf("M| slip     SS rms=%.3e max=%.3e | DS rms=%.3e max=%.3e | ang max=%.3e"
+                    "   [접지발 지령속도, m/s]\n",
+                    M.slipSS.rms(), M.slipSS.mx, M.slipDS.rms(), M.slipDS.mx, M.slipAngMax);
+        std::printf("M| contact  dsFootDev max=%.5f m | sigComRaw(구속전) min=%.4f max=%.4f\n",
+                    M.dsDevMax, M.sigRawMinMin, M.sigRawMaxMax);
+        // 제어 권한(Ji·N 최소특이값). 결정론적 지표 — 정식화 비교의 본선.
+        std::printf("M| author   sigComMin  SS=%.4f DS=%.4f all(min=%.4f mean=%.4f)\n",
+                    M.sigSsN ? M.sigComSsSum / (double)M.sigSsN : 0.0,
+                    M.sigDsN ? M.sigComDsSum / (double)M.sigDsN : 0.0,
+                    M.sigMinMin, M.sigN ? M.sigMinSum / (double)M.sigN : 0.0);
+        std::printf("M| author   sigPelMin  SS=%.4f DS=%.4f all(min=%.4f mean=%.4f)\n",
+                    M.sigSsN ? M.sigPelSsSum / (double)M.sigSsN : 0.0,
+                    M.sigDsN ? M.sigPelDsSum / (double)M.sigDsN : 0.0,
+                    M.sigPelMinMin, M.sigN ? M.sigPelSum / (double)M.sigN : 0.0);
+        std::printf("M| ik       dqRel max=%.3e | taskVelDiff com=%.3e swing=%.3e contact=%.3e m/s"
+                    "   [ikCompare=1 일 때만]\n",
+                    M.ikResMax, M.ikComMax, M.ikSwMax, M.ikConMax);
+        std::printf("M| zmpLipm  rms=(%.5f,%.5f) max=(%.5f,%.5f)   [측정ZMP − LIPM함의ZMP, m]\n",
+                    M.zmpLx.rms(), M.zmpLy.rms(), M.zmpLx.mx, M.zmpLy.mx);
+        std::printf("M| margin   zmpVsSupFoot max=(%.4f,%.4f) m (발 반치수 x=0.150 y=0.065)"
+                    " | trueSS=%ld/%ld tick\n",
+                    M.zmpFootX, M.zmpFootY, M.ssTrue, M.ssPlan);
+        std::printf("M| smooth   qStep rms=%.5f max=%.5f rad\n", M.qStep.rms(), M.qStep.mx);
+    }
 
     // --- Space 로 정지(엣지 한 번) → graceful stop, 5초 유지 ---
     int nStop = (int)std::lround(5.0 / dt);

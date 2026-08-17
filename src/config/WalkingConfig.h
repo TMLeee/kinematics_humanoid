@@ -89,6 +89,50 @@ struct WalkingConfig {
     //   바꿔야 한다. A/B 용으로 노브를 남겨 둔다.
     double comMeasPlanted = 1.0;
 
+    // ── IK 정식화(formulation) ────────────────────────────────────────────
+    //  0 = reduced   : 최적화 변수 = 관절 33. 지지발 구속을 baseSlave()/reduce() 로 소거.
+    //  1 = floating  : 최적화 변수 = nv 39(가상 base 6 포함). 지지발 구속을 최상위 task 로.
+    //  단일지지에서 두 형태는 **달성 task 속도가 기계정밀도로 동일**하다(ikCompare=1 로
+    //  상시 검증: λ→0 에서 COM 속도차 9e-15 m/s). 남는 차이는 여유 자유도 배분뿐이다
+    //  (최소노름이 재는 노름이 다름: reduced ‖dq_joint‖ vs floating ‖[dq_base;dq_joint]‖).
+    //  floating 만이 양발지지에서 두 발을 동시에 구속할 수 있다(12행 > base 6 → 소거 불가).
+    //  0 으로 두면 기존 reduced 동작으로 정확히 되돌아간다(A/B 용).
+    double floatingBase = 1.0;
+    //  양발지지/정지 구간에서 양발을 모두 접촉 구속할지. floatingBase=1 에서만 유효.
+    //  0 이면 반대발은 (기존처럼) 하위 우선순위 스윙 task 로만 잡힌다 = 접촉이 soft.
+    //  실측: DS 접촉 잔차 1.13e-3 → 3.5e-6 m/s (약 320배). 대신 DS 구간 COM 제어 권한이
+    //  절반으로 줄어든다(sigComMin 0.128 → 0.072) — 이는 "양발이 땅에 있다" 는 물리를
+    //  정직하게 반영한 결과이지 성능 저하가 아니다.
+    double dsBothFeet = 1.0;
+    //  접촉 구속 task 의 DLS 감쇠. 0 이면 lamSupport 를 그대로 쓴다.
+    //  1e-6 이면 접촉이 사실상 완전 구속이 된다(지령 발속도 ~1e-12 m/s). Jsup 조건수가
+    //  2.4 수준이라 이렇게 작게 잡아도 안전하다(양발 12행에서도 확인).
+    double lamContact = 1.0e-6;
+    //  1 = 매 tick 두 정식화를 모두 풀어 dq 상대잔차를 계측(동치성 회귀 검증용, 2배 느림).
+    double ikCompare = 0.0;
+
+    // ── 골반(pelvis) 자세 task 좌표 ────────────────────────────────────────
+    //  0 = world(=계획) 프레임 각자코비안/오차 (기존).
+    //  1 = 골반 바디 프레임: J_body = R_pel^T·J_ang,  e_body = R_pel^T·e.
+    //      등방 DLS + 3행 전부 사용 시 dq 는 world 형태와 **정확히 동일**하다(회전 불변).
+    //      의미가 생기는 건 (a) roll/pitch 오차를 IMU(진짜 world)에서 받을 때,
+    //      (b) 축별 이득을 다르게 줄 때. J_body 는 내부 world 프레임 선택과 무관하므로
+    //      계획 프레임 자코비안과 진짜 world 의 IMU 오차를 섞어도 정합이 맞는다.
+    //  검증: 15 s 보행 7500 tick 전체에서 world↔body 의 dq 상대차 max 1.0e-15
+    //  (ikCompare=2). 즉 지금 이 값을 1 로 켜는 것 자체는 거동을 바꾸지 않는다 —
+    //  IMU/축별이득으로 가는 구조적 준비다.
+    double pelvisBodyFrame = 1.0;
+    //  골반 yaw 전용 이득(0 = kpPelvis 와 동일). pelvisBodyFrame=1 에서만 분리 적용.
+    double kpPelvisYaw = 0.0;
+    //  1 = 골반 roll/pitch 오차를 **측정 base 자세**(IMU 등가)에서 취한다. yaw 는 계획 유지.
+    //      pelvisBodyFrame=1 필요. 실측 기울기를 균형에 되먹이는 첫 경로.
+    //  **실측은 해롭다 → 기본 off.** 9 조건 스윕에서 전도 2/9 → 3/9 로 늘고(vx=0.08 에서
+    //  A/C 는 버티는데 이것만 전도), pitch rms 0.47° → 0.74°, ZMP x 오차 rms 2 배,
+    //  내부 COM 오차 rms +78%. roll rms 만 0.46° → 0.31° 로 좋아진다.
+    //  이유: 순수 P 자세 피드백이라 위상지연이 그대로 LIPM 에 에너지를 넣는다. 제대로 쓰려면
+    //  DCM/캡처포인트 또는 ankle strategy 형태로 감쇠를 포함해 설계해야 한다.
+    double pelvisImuRollPitch = 0.0;
+
     // CLIK task 비례 이득 (우선순위: 고정발>COM>스윙발>손>골반>허리)
     double kpCom    = 6.0;
     double kpSwing  = 12.0;

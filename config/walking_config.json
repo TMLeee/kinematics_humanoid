@@ -33,6 +33,17 @@
   "closedLoop": 0.0,
   "footRefAnkle": 1.0,
 
+  "_ik": "IK 정식화. floatingBase=1: 변수 nv=39(가상 base 6 포함) + 지지발을 최상위 접촉 구속 task 로. 0 이면 기존 reduced(관절 33, base 소거). 단일지지에서 달성 task 속도는 동일. dsBothFeet=1 은 양발지지에서 두 발을 동시에 구속(floating 에서만 가능).",
+  "floatingBase": 1.0,
+  "dsBothFeet": 1.0,
+  "lamContact": 1.0e-6,
+  "ikCompare": 0.0,
+
+  "_pelvis": "골반 자세 task 좌표. pelvisBodyFrame=1 은 골반 바디 프레임(J_body=R^T J). 동일 이득/3행 전부면 world 형태와 dq 가 1e-15 로 같다 — IMU/축별이득을 위한 구조적 준비. pelvisImuRollPitch=1 은 roll/pitch 를 실측 자세에서 받는데 실측 결과 해로워서 off.",
+  "pelvisBodyFrame": 1.0,
+  "kpPelvisYaw": 0.0,
+  "pelvisImuRollPitch": 0.0,
+
   "kpCom": 6.0,
   "kpSwing": 6.0,
   "kpHand": 6.0,

@@ -11,6 +11,14 @@
 //   - 나머지(COM, 스윙발, 손, 골반)는 관절공간에서 successive null-space projection
 //     (감쇠 최소자승, DLS)으로 우선순위대로 푼다.
 //   - 발이 바뀌면 지지발/스윙발 Jacobian 만 교체하면 되어 우선순위가 자동 조정된다.
+//
+// 두 가지 정식화(config: floatingBase)를 모두 지원한다. solve() 는 변수 차원에 무관하다.
+//   (a) reduced  변수 = 관절 nJoints(33). 지지발 구속을 baseSlave()/reduce() 로 **소거**.
+//   (b) floating 변수 = nv(39, 가상 base 6 포함). 지지발 구속을 **최상위 task** 로 넣고
+//       task 자코비안은 축약 없이 nv 열을 그대로 쓴다. 해에서 관절 성분만 로봇에 보낸다.
+//   단일지지에서 (a)≡(b): J_c q̇=0 을 [Jb|Jj] 로 나누면 Jb 가 6×6 가역이라
+//   q̇_b = −Jb⁻¹Jj q̇_j 로 소거되고, 그것을 대입한 것이 곧 reduce() 다.
+//   (b) 만이 **양발지지에서 두 발을 동시에** 구속할 수 있다(구속 12행 > base 6 → 소거 불가).
 #include <vector>
 #include <Eigen/Dense>
 
@@ -36,8 +44,19 @@ public:
     //   Ĵ = J_joint + J_base * S.
     static MatrixXd reduce(const MatrixXd& Jtask, const MatrixXd& S);
 
+    // 각 task 가 "상위 task 의 null space 안에서" 실제로 쓸 수 있는 방향의 세기.
+    //   Ji·N 의 특이값. sigMin 이 작을수록 그 task 는 그 방향으로 무력하다
+    //   (= 상위 task 와 접촉 구속이 그 자유도를 이미 다 써 버렸다는 뜻).
+    //   카오스에 흔들리지 않는 결정론적 지표라 정식화 비교에 적합하다.
+    struct TaskDiag {
+        double sigMin = 0.0, sigMax = 0.0;
+        int rows = 0;
+    };
+
     // 우선순위 DLS 풀이. tasks 는 우선순위 높은 순서. dq(nJoints) 반환.
-    static VectorXd solve(const std::vector<Task>& tasks, int nJoints);
+    //   diag != nullptr 이면 task 별 Ji·N 특이값을 기록한다(SVD 비용 발생).
+    static VectorXd solve(const std::vector<Task>& tasks, int nJoints,
+                          std::vector<TaskDiag>* diag = nullptr);
 };
 
 }  // namespace kin
